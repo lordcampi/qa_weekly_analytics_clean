@@ -104,7 +104,11 @@ class Settings(BaseModel):
         try:
             import streamlit as st  # type: ignore[import-untyped]
 
-            secrets = st.secrets
+            try:
+                secrets = st.secrets
+            except Exception as exc:
+                raise SettingsError(f"No se pudieron leer st.secrets: {exc}") from exc
+
             try:
                 sched_enabled = str(secrets.get("SCHEDULER_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
                 settings = cls(
