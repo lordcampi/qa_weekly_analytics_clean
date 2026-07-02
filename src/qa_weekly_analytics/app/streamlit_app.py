@@ -397,16 +397,15 @@ def main() -> None:
     st.set_page_config(page_title="QA Weekly Analytics", layout="wide")
     st.title("QA Weekly Analytics — Dashboard")
 
-    # Settings: auto-detecta local (.env) vs Streamlit Cloud (st.secrets)
+    # Settings: Streamlit Cloud (st.secrets) o local (.env)
     try:
+        settings = Settings.from_streamlit_secrets()
+    except SettingsError:
         try:
-            _ = st.secrets.get("DATA_URL")
-            settings = Settings.from_streamlit_secrets()
-        except Exception:
             settings = Settings.from_env()
-    except SettingsError as exc:
-        st.error(f"Configuración inválida: {exc}")
-        st.stop()
+        except SettingsError as exc:
+            st.error(f"Configuración inválida: {exc}")
+            st.stop()
 
     # Carga de datos (CSV público)
     with st.sidebar:
