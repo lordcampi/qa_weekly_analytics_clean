@@ -100,31 +100,34 @@ class Settings(BaseModel):
 
     @classmethod
     def from_streamlit_secrets(cls) -> "Settings":
-        """Carga la configuración desde st.secrets (Streamlit Cloud)."""
+        """Carga la configuración desde st.secrets (Streamlit Cloud).
+
+        Cualquier error al acceder o usar st.secrets (incluyendo
+        StreamlitSecretNotFoundError cuando no existe secrets.toml) se
+        convierte en SettingsError para que el caller pueda hacer fallback.
+        """
         try:
             import streamlit as st  # type: ignore[import-untyped]
-
-            try:
-                secrets = st.secrets
-            except Exception as exc:
-                raise SettingsError(f"No se pudieron leer st.secrets: {exc}") from exc
-
-            try:
-                sched_enabled = str(secrets.get("SCHEDULER_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
-                settings = cls(
-                    DATA_URL=str(secrets.get("DATA_URL", "")),
-                    TIMEZONE=str(secrets.get("TIMEZONE", "America/Bogota")),
-                    HISTORIC_EXCEL_PATH=str(secrets.get("HISTORIC_EXCEL_PATH", "data/Registro_QA_Historico.xlsx")),
-                    SCHEDULER_ENABLED=sched_enabled,
-                    SCHEDULER_CRON_DAY=str(secrets.get("SCHEDULER_CRON_DAY", "mon")),
-                    SCHEDULER_CRON_HOUR=int(str(secrets.get("SCHEDULER_CRON_HOUR", "8"))),
-                    SCHEDULER_CRON_MINUTE=int(str(secrets.get("SCHEDULER_CRON_MINUTE", "0"))),
-                )
-                logger.info("Settings cargados desde st.secrets")
-                return settings
-            except ValidationError as exc:
-                summary = _summarize_validation_error(exc)
-                logger.error("Error validando Settings desde secrets", extra={"summary": summary})
-                raise SettingsError(f"Configuración inválida (secrets): {summary}") from exc
         except ImportError:
             raise SettingsError("Streamlit no está disponible") from None
+
+        try:
+            secrets = st.secrets
+            sched_enabled = str(secrets.get("SCHEDULER_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
+            settings = cls(
+                DATA_URL=str(secrets.get("DATA_URL", "")),
+                TIMEZONE=str(secrets.get("TIMEZONE", "America/Bogota")),
+                HISTORIC_EXCEL_PATH=str(secrets.get("HISTORIC_EXCEL_PATH", "data/Registro_QA_Historico.xlsx")),
+                SCHEDULER_ENABLED=sched_enabled,
+                SCHEDULER_CRON_DAY=str(secrets.get("SCHEDULER_CRON_DAY", "mon")),
+                SCHEDULER_CRON_HOUR=int(str(secrets.get("SCHEDULER_CRON_HOUR", "8"))),
+                SCHEDULER_CRON_MINUTE=int(str(secrets.get("SCHEDULER_CRON_MINUTE", "0"))),
+            )
+            logger.info("Settings cargados desde st.secrets")
+            return settings
+        except ValidationError as exc:
+            summary = _summarize_validation_error(exc)
+            logger.error("Error validando Settings desde secrets", extra={"summary": summary})
+            raise SettingsError(f"Configuración inválida (secrets): {summary}") from exc
+        except Exception as exc:
+            raise SettingsError(f"No se pudieron leer st.secrets: {exc}") from exc
