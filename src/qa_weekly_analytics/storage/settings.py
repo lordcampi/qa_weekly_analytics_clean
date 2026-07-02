@@ -79,7 +79,8 @@ class Settings(BaseModel):
     @classmethod
     def from_env(cls) -> "Settings":
         """Carga la configuración desde variables de entorno (incluye .env)."""
-        load_dotenv()
+        _env_path = Path(__file__).resolve().parents[3] / ".env"
+        load_dotenv(dotenv_path=_env_path)
         try:
             sched_enabled = (os.getenv("SCHEDULER_ENABLED", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
             settings = cls(
