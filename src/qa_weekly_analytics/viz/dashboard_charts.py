@@ -16,15 +16,7 @@ class DashboardChartError(Exception):
 
 
 def _empty_figure(title: str, message: str = "Sin datos para mostrar") -> go.Figure:
-    """Construye una figura vacía con mensaje.
-
-    Args:
-        title: Título del gráfico.
-        message: Mensaje visible.
-
-    Returns:
-        Figura Plotly vacía.
-    """
+    """Construye una figura vacía con mensaje."""
     fig = go.Figure()
     fig.update_layout(
         title=title,
@@ -43,18 +35,12 @@ def _empty_figure(title: str, message: str = "Sin datos para mostrar") -> go.Fig
     return fig
 
 
+# ---------------------------------------------------------------------------
+# Gráficos existentes (conservados)
+# ---------------------------------------------------------------------------
+
 def trend_lv_bar(kpis: Any) -> go.Figure:
-    """Construye gráfico de tendencia diaria L-V.
-
-    Args:
-        kpis: KPIResult con atributo trend_daily.
-
-    Returns:
-        Figura Plotly de barras.
-
-    Raises:
-        DashboardChartError: Si falta información requerida.
-    """
+    """Construye gráfico de tendencia diaria L-V."""
     if not hasattr(kpis, "trend_daily"):
         raise DashboardChartError("KPIResult no contiene trend_daily")
 
@@ -76,18 +62,7 @@ def trend_lv_bar(kpis: Any) -> go.Figure:
 
 
 def top_agents_bar(kpis: Any, *, top_n: int = 10) -> go.Figure:
-    """Construye gráfico horizontal de Top agentes.
-
-    Args:
-        kpis: KPIResult con atributo by_agent.
-        top_n: Máximo de agentes a mostrar.
-
-    Returns:
-        Figura Plotly.
-
-    Raises:
-        DashboardChartError: Si falta información requerida.
-    """
+    """Construye gráfico horizontal de Top agentes."""
     if not hasattr(kpis, "by_agent"):
         raise DashboardChartError("KPIResult no contiene by_agent")
 
@@ -112,18 +87,7 @@ def top_agents_bar(kpis: Any, *, top_n: int = 10) -> go.Figure:
 
 
 def top_reasons_bar(kpis: Any, *, top_n: int = 10) -> go.Figure:
-    """Construye gráfico horizontal de Top motivos.
-
-    Args:
-        kpis: KPIResult con atributo by_reason.
-        top_n: Máximo de motivos a mostrar.
-
-    Returns:
-        Figura Plotly.
-
-    Raises:
-        DashboardChartError: Si falta información requerida.
-    """
+    """Construye gráfico horizontal de Top motivos."""
     if not hasattr(kpis, "by_reason"):
         raise DashboardChartError("KPIResult no contiene by_reason")
 
@@ -148,18 +112,7 @@ def top_reasons_bar(kpis: Any, *, top_n: int = 10) -> go.Figure:
 
 
 def pareto_agents_chart(kpis: Any, *, top_n: int = 10) -> go.Figure:
-    """Construye gráfico Pareto de agentes.
-
-    Args:
-        kpis: KPIResult con atributo by_agent.
-        top_n: Máximo de agentes a mostrar.
-
-    Returns:
-        Figura Plotly con barras y línea acumulada.
-
-    Raises:
-        DashboardChartError: Si falta información requerida.
-    """
+    """Construye gráfico Pareto de agentes."""
     if not hasattr(kpis, "by_agent"):
         raise DashboardChartError("KPIResult no contiene by_agent")
 
@@ -227,24 +180,7 @@ def critical_vs_non_critical_stacked(
     agents: list[str] | None = None,
     reasons: list[str] | None = None,
 ) -> go.Figure:
-    """Construye gráfico stacked de críticos vs no críticos por día.
-
-    Este gráfico usa el DataFrame limpio QA-005, no KPIResult, para poder
-    recalcular distribución diaria sin depender de tablas derivadas.
-
-    Args:
-        df: DataFrame normalizado con columnas date, agent, reason, is_critical.
-        start_date: Fecha inicio inclusiva.
-        end_date: Fecha fin inclusiva.
-        agents: Filtro opcional de agentes.
-        reasons: Filtro opcional de motivos.
-
-    Returns:
-        Figura Plotly stacked.
-
-    Raises:
-        DashboardChartError: Si faltan columnas requeridas.
-    """
+    """Construye gráfico stacked de críticos vs no críticos por día."""
     required = {"date", "agent", "reason", "is_critical"}
     missing = required - set(df.columns)
     if missing:
@@ -281,4 +217,123 @@ def critical_vs_non_critical_stacked(
         labels={"date": "Fecha", "count": "Errores", "critical_label": "Tipo"},
     )
     fig.update_layout(barmode="stack", yaxis_title="Errores", xaxis_title="Fecha")
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# NUEVOS gráficos para dashboard por semanas
+# ---------------------------------------------------------------------------
+
+def weekly_trend_bar(
+    weekly_kpis: list[tuple[str, int, int]],
+    *,
+    title: str = "Tendencia Semanal",
+) -> go.Figure:
+    """Gráfico de barras stacked con una barra por semana.
+
+    Args:
+        weekly_kpis: Lista de (label, total_errors, critical_count) por semana.
+        title: Título del gráfico.
+
+    Returns:
+        Figura Plotly stacked bar.
+    """
+    if not weekly_kpis:
+        return _empty_figure(title)
+
+    labels = [w[0] for w in weekly_kpis]
+    totals = [w[1] for w in weekly_kpis]
+    criticals = [w[2] for w in weekly_kpis]
+    non_critical = [t - c for t, c in zip(totals, criticals)]
+
+    fig = go.Figure()
+    fig.add_bar(name="No críticos", x=labels, y=non_critical, marker_color="#3498db")
+    fig.add_bar(name="Críticos", x=labels, y=criticals, marker_color="#e74c3c")
+
+    fig.update_layout(
+        title=title,
+        barmode="stack",
+        xaxis_title="Semana",
+        yaxis_title="Errores",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
+    )
+    return fig
+
+
+def comparison_side_by_side(
+    week_a_label: str,
+    week_b_label: str,
+    kpis_a: Any,
+    kpis_b: Any,
+    *,
+    top_n: int = 10,
+) -> go.Figure:
+    """Barras horizontales lado a lado comparando errores por agente entre dos semanas."""
+    agents_a_df = kpis_a.by_agent if hasattr(kpis_a, "by_agent") and not kpis_a.by_agent.empty else pd.DataFrame(columns=["agent", "count"])
+    agents_b_df = kpis_b.by_agent if hasattr(kpis_b, "by_agent") and not kpis_b.by_agent.empty else pd.DataFrame(columns=["agent", "count"])
+
+    all_agents: set[str] = set()
+    counts_a: dict[str, int] = {}
+    counts_b: dict[str, int] = {}
+
+    if not agents_a_df.empty:
+        for _, row in agents_a_df.iterrows():
+            a = str(row["agent"])
+            all_agents.add(a)
+            counts_a[a] = int(row["count"])
+    if not agents_b_df.empty:
+        for _, row in agents_b_df.iterrows():
+            a = str(row["agent"])
+            all_agents.add(a)
+            counts_b[a] = int(row["count"])
+
+    if not all_agents:
+        return _empty_figure("Comparación por agente")
+
+    agent_list = sorted(all_agents, key=lambda a: counts_a.get(a, 0) + counts_b.get(a, 0), reverse=True)[:top_n]
+
+    vals_a = [counts_a.get(a, 0) for a in agent_list]
+    vals_b = [counts_b.get(a, 0) for a in agent_list]
+
+    fig = go.Figure()
+    fig.add_bar(name=week_a_label, y=agent_list, x=vals_a, orientation="h", marker_color="#7fb3d8")
+    fig.add_bar(name=week_b_label, y=agent_list, x=vals_b, orientation="h", marker_color="#2c3e50")
+
+    fig.update_layout(
+        title=f"Comparación: {week_a_label} vs {week_b_label}",
+        barmode="group",
+        xaxis_title="Errores",
+        yaxis_title="Agente",
+        legend={"orientation": "h"},
+    )
+    return fig
+
+
+def agent_trend_line(
+    weekly_data: list[tuple[str, int]],
+    agent_name: str,
+) -> go.Figure:
+    """Línea de tendencia de errores de un agente a lo largo de semanas."""
+    if not weekly_data:
+        return _empty_figure(f"Tendencia — {agent_name}")
+
+    labels = [w[0] for w in weekly_data]
+    counts = [w[1] for w in weekly_data]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=counts,
+            mode="lines+markers",
+            name=agent_name,
+            line={"width": 2},
+            marker={"size": 8},
+        )
+    )
+    fig.update_layout(
+        title=f"Tendencia semanal — {agent_name}",
+        xaxis_title="Semana",
+        yaxis_title="Errores",
+    )
     return fig

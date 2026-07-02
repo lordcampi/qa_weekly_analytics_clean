@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -15,26 +15,34 @@ if str(_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(_SRC_PATH))
 
 from qa_weekly_analytics.app.dashboard_logic import (  # noqa: E402
-    compute_default_range,
+    FilterOptions,
+    get_available_weeks,
     get_filter_options,
-    map_critical_choice,
-    quincena_preset_labels,
     resolve_selected_weeks,
-    week_options_for_ui,
 )
 from qa_weekly_analytics.app.kpi_cards import KpiCardsError, build_kpi_cards  # noqa: E402
-from qa_weekly_analytics.connectors.google_auth import GoogleAuthError, clear_cached_token, get_credentials  # noqa: E402
+from qa_weekly_analytics.connectors.google_auth import GoogleAuthError, get_credentials  # noqa: E402
 from qa_weekly_analytics.connectors.sheets_reader import SheetsReadError, read_range  # noqa: E402
-from qa_weekly_analytics.domain.date_ranges import DateRange, list_monday_friday_weeks, merge_week_ranges, previous_week_monday_friday  # noqa: E402
-from qa_weekly_analytics.domain.period_comparison import comparison_label, comparison_ranges_for_period  # noqa: E402
+from qa_weekly_analytics.domain.date_ranges import (  # noqa: E402
+    DateRange,
+    available_years,
+    get_year_weeks,
+    iso_week_label,
+    merge_week_ranges,
+)
 from qa_weekly_analytics.domain.validation import DataValidationError, clean_and_validate_rows  # noqa: E402
-from qa_weekly_analytics.jobs.scheduler import start_scheduler  # noqa: E402
+from qa_weekly_analytics.kpis.weekly_comparison import compare_weeks  # noqa: E402
 from qa_weekly_analytics.kpis.weekly_summary import compute_kpis  # noqa: E402
-from qa_weekly_analytics.kpis.wow_recurrence import WoWRecurrenceResult, analyze_wow_recurrence  # noqa: E402
 from qa_weekly_analytics.reporting.pdf_report import PDFReportError, build_pdf_report  # noqa: E402
-from qa_weekly_analytics.storage.publish_weekly_snapshot import PublishSnapshotError, publish_weekly_snapshot  # noqa: E402
 from qa_weekly_analytics.storage.settings import Settings, SettingsError  # noqa: E402
-from qa_weekly_analytics.viz.dashboard_charts import critical_vs_non_critical_stacked, pareto_agents_chart, top_agents_bar, top_reasons_bar, trend_lv_bar  # noqa: E402
+from qa_weekly_analytics.viz.dashboard_charts import (  # noqa: E402
+    agent_trend_line,
+    comparison_side_by_side,
+    critical_vs_non_critical_stacked,
+    top_agents_bar,
+    top_reasons_bar,
+    weekly_trend_bar,
+)
 from qa_weekly_analytics.viz.table_styles import style_critical_table, style_ranking_table, style_recurrence_table  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -43,15 +51,22 @@ APP_GOOGLE_SCOPES: list[str] = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def _setup_logging() -> None:
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    )
 
 
 @st.cache_data(show_spinner=True)
 def _load_and_clean_data(sheet_id: str, sheet_tab: str, sheet_range: str) -> tuple[pd.DataFrame, object]:
-    credentials_path = Path(os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")).resolve()
+    credentials_path = Path(os.getenv("GOOGLE_CREDENTIALS_PATH", ".secrets/credentials.json")).resolve()
     token_path = Path(os.getenv("GOOGLE_TOKEN_PATH", ".secrets/token.json")).resolve()
     try:
-        creds = get_credentials(scopes=APP_GOOGLE_SCOPES, credentials_path=credentials_path, token_path=token_path)
+        creds = get_credentials(
+            scopes=APP_GOOGLE_SCOPES,
+            credentials_path=credentials_path,
+            token_path=token_path,
+        )
         sheet_data = read_range(credentials=creds, sheet_id=sheet_id, sheet_tab=sheet_tab, sheet_range=sheet_range)
         valid_df, report = clean_and_validate_rows(sheet_data.df, source_row_start=2, max_examples=10)
         return valid_df, report
@@ -60,232 +75,10 @@ def _load_and_clean_data(sheet_id: str, sheet_tab: str, sheet_range: str) -> tup
         raise RuntimeError(str(exc)) from exc
 
 
-def _apply_week_selection_to_dates(
-    df: pd.DataFrame,
-    *,
-    use_week_picker: bool,
-    selected_week_labels: list[str],
-    week_options: dict[str, DateRange],
-) -> tuple[date, date]:
-    if use_week_picker and selected_week_labels:
-        weeks = resolve_selected_weeks(selected_week_labels, week_options)
-        if weeks:
-            merged = merge_week_ranges(weeks)
-            return merged.start_date, merged.end_date
-    return st.session_state["start_date"], st.session_state["end_date"]
+# ---------------------------------------------------------------------------
+# Helpers de renderizado
+# ---------------------------------------------------------------------------
 
-
-def _render_publish_section(df: pd.DataFrame, settings: Settings) -> None:
-    st.subheader("Publicar semana cerrada")
-    st.caption("Congela KPIs de la semana anterior L–V en Google Sheets y Excel histórico.")
-    week_to_publish = previous_week_monday_friday(tz_name=settings.TIMEZONE)
-    st.text(f"Semana: {week_to_publish.start_date} → {week_to_publish.end_date}")
-    credentials_path = Path(os.getenv("GOOGLE_CREDENTIALS_PATH", ".secrets/credentials.json")).resolve()
-    token_path = Path(os.getenv("GOOGLE_TOKEN_PATH", ".secrets/token.json")).resolve()
-
-    if st.button("Re-autorizar Google (lectura + escritura)", use_container_width=True):
-        clear_cached_token(token_path)
-        st.cache_data.clear()
-        try:
-            get_credentials(scopes=APP_GOOGLE_SCOPES, credentials_path=credentials_path, token_path=token_path, force_reauth=True)
-            st.success("Google re-autorizado. Aceptá permisos de edición en Sheets si el navegador lo pide.")
-        except GoogleAuthError as exc:
-            st.error(str(exc))
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        to_sheets = st.checkbox("Publicar en Google Sheets", value=True)
-    with col_b:
-        to_excel = st.checkbox("Publicar en Excel local", value=True)
-    if st.button("Publicar semana cerrada", type="primary", use_container_width=True):
-        write_creds = None
-        if to_sheets:
-            try:
-                write_creds = get_credentials(
-                    scopes=APP_GOOGLE_SCOPES,
-                    credentials_path=credentials_path,
-                    token_path=token_path,
-                )
-            except GoogleAuthError as exc:
-                st.error(f"No se pudo autenticar para escritura: {exc}")
-                st.info("Usá el botón «Re-autorizar Google» arriba y aceptá permiso para editar hojas de cálculo.")
-                return
-        try:
-            result = publish_weekly_snapshot(
-                df,
-                week_range=week_to_publish,
-                settings=settings,
-                credentials=write_creds,
-                to_sheets=to_sheets,
-                to_excel=to_excel,
-            )
-            if result.skipped:
-                st.warning(f"La semana {result.week_id} ya estaba publicada.")
-            else:
-                st.success(f"Semana {result.week_id} publicada correctamente.")
-                if result.excel_path:
-                    st.caption(f"Excel: {result.excel_path}")
-        except PublishSnapshotError as exc:
-            st.error(str(exc))
-            if "insufficient authentication scopes" in str(exc).lower() or "scope" in str(exc).lower():
-                st.info("Usá «Re-autorizar Google» y volvé a publicar.")
-
-
-def _render_one_on_one_tab(
-    df: pd.DataFrame,
-    *,
-    start_date: date,
-    end_date: date,
-    agents: list[str],
-    reasons: list[str],
-    critical: bool | None,
-    wow_results: WoWRecurrenceResult,
-    comparison_lbl: str,
-    recurrent_agents_comparison: pd.DataFrame,
-) -> None:
-    st.subheader("Modo 1:1 — Revisión por agente")
-    st.caption("Selecciona un agente y el periodo (semanas o fechas) para preparar la reunión.")
-    one_agent = st.selectbox("Agente para 1:1", options=[""] + agents, index=0)
-    if not one_agent:
-        st.info("Elige un agente para ver su detalle en el periodo seleccionado.")
-        return
-
-    agent_filter = [one_agent]
-    kpis_1a1 = compute_kpis(
-        df,
-        start_date=start_date,
-        end_date=end_date,
-        agents=agent_filter,
-        reasons=reasons or None,
-        critical=critical,
-    )
-    st.metric("Errores del agente", kpis_1a1.total_errors)
-    st.metric("Críticos", kpis_1a1.critical_count)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Motivos")
-        if kpis_1a1.by_reason.empty:
-            st.caption("Sin errores en el periodo.")
-        else:
-            st.dataframe(style_ranking_table(kpis_1a1.by_reason), use_container_width=True)
-    with col2:
-        st.subheader("Reincidencias agente + motivo")
-        st.dataframe(style_recurrence_table(kpis_1a1.recurrence["repeated_agent_reason"]), use_container_width=True)
-
-    st.subheader("Evolución en el periodo")
-    st.info(comparison_lbl)
-    full_agent_df = df[df["agent"] == one_agent]
-    current_range, previous_range = comparison_ranges_for_period(start_date, end_date)
-    agent_wow = analyze_wow_recurrence(full_agent_df, current_week=current_range, previous_week=previous_range)
-
-    status = "—"
-    if one_agent in wow_results.persistent_agents:
-        status = "Persistente"
-    elif one_agent in wow_results.new_alert_agents:
-        status = "Nuevo en alerta"
-    elif one_agent in wow_results.corrected_agents:
-        status = "Subsanado"
-    st.metric("Estado evolutivo (periodo global)", status)
-
-    if not kpis_1a1.critical_table.empty:
-        st.subheader("Detalle críticos")
-        st.dataframe(style_critical_table(kpis_1a1.critical_table), use_container_width=True)
-
-    if not recurrent_agents_comparison.empty and one_agent in recurrent_agents_comparison["agent"].values:
-        st.subheader("Comparación reincidentes")
-        row = recurrent_agents_comparison[recurrent_agents_comparison["agent"] == one_agent]
-        st.dataframe(row, use_container_width=True)
-
-    if st.button("Generar PDF 1:1", use_container_width=True):
-        try:
-            pdf_bytes = build_pdf_report(
-                kpis_1a1,
-                title=f"QA 1:1 — {one_agent}",
-                wow_results=agent_wow,
-                comparison_label=comparison_lbl,
-                recurrent_agents_comparison=recurrent_agents_comparison[
-                    recurrent_agents_comparison["agent"] == one_agent
-                ] if not recurrent_agents_comparison.empty else recurrent_agents_comparison,
-            )
-            st.download_button(
-                "Descargar PDF 1:1",
-                data=pdf_bytes,
-                file_name=f"qa_1a1_{one_agent}_{start_date}_{end_date}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-            )
-        except PDFReportError as exc:
-            st.error(str(exc))
-
-
-def _build_recurrent_agents_comparison(df: pd.DataFrame, *, current_range: DateRange, previous_range: DateRange, wow_results: WoWRecurrenceResult) -> pd.DataFrame:
-    """Compara SOLO agentes reincidentes reales entre las dos semanas.
-
-    Reincidente real = agente que aparece como persistente en el análisis WoW,
-    es decir, tuvo reincidencia en el periodo anterior y volvió a reincidir
-    en el periodo analizado. No incluye nuevos en alerta.
-    """
-    recurrent_agents = sorted(set(wow_results.persistent_agents or []))
-    columns = [
-        "agent",
-        "previous_errors",
-        "current_errors",
-        "delta",
-        "delta_pct",
-        "previous_critical_errors",
-        "current_critical_errors",
-        "critical_delta",
-        "critical_delta_pct",
-    ]
-    if not recurrent_agents:
-        return pd.DataFrame(columns=columns)
-
-    previous_df = df[
-        (df["date"] >= previous_range.start_date)
-        & (df["date"] <= previous_range.end_date)
-        & (df["agent"].isin(recurrent_agents))
-    ]
-    current_df = df[
-        (df["date"] >= current_range.start_date)
-        & (df["date"] <= current_range.end_date)
-        & (df["agent"].isin(recurrent_agents))
-    ]
-
-    previous_counts = previous_df.groupby("agent").size().to_dict()
-    current_counts = current_df.groupby("agent").size().to_dict()
-
-    previous_critical_counts = previous_df[previous_df["is_critical"]].groupby("agent").size().to_dict() if "is_critical" in previous_df.columns else {}
-    current_critical_counts = current_df[current_df["is_critical"]].groupby("agent").size().to_dict() if "is_critical" in current_df.columns else {}
-
-    rows = []
-    for agent in recurrent_agents:
-        prev = int(previous_counts.get(agent, 0))
-        curr = int(current_counts.get(agent, 0))
-        delta = curr - prev
-        delta_pct = (delta / prev) if prev else (1.0 if curr else 0.0)
-
-        prev_critical = int(previous_critical_counts.get(agent, 0))
-        curr_critical = int(current_critical_counts.get(agent, 0))
-        critical_delta = curr_critical - prev_critical
-        critical_delta_pct = (critical_delta / prev_critical) if prev_critical else (1.0 if curr_critical else 0.0)
-
-        rows.append(
-            {
-                "agent": agent,
-                "previous_errors": prev,
-                "current_errors": curr,
-                "delta": delta,
-                "delta_pct": delta_pct,
-                "previous_critical_errors": prev_critical,
-                "current_critical_errors": curr_critical,
-                "critical_delta": critical_delta,
-                "critical_delta_pct": critical_delta_pct,
-            }
-        )
-
-    return pd.DataFrame(rows).sort_values(
-        ["current_errors", "previous_errors", "agent"], ascending=[False, False, True]
-    )
 
 def _render_quality_report(report: object) -> None:
     with st.expander("Calidad de datos (QA-005)", expanded=False):
@@ -303,55 +96,323 @@ def _render_kpi_cards(kpis: object) -> None:
         col.metric(label=card.label, value=card.value, help=card.help_text)
 
 
-def _render_wow_recurrence_tab(wow_results: WoWRecurrenceResult, comparison_label: str) -> None:
-    st.subheader("Evolución de Reincidencias")
-    st.caption("Compara el periodo seleccionado contra el periodo anterior de igual duración.")
-    st.info(comparison_label)
-    st.metric(label="Tasa de Subsanación", value=f"{wow_results.correction_rate:.1%}")
+def _render_pdf_export(kpis: object) -> None:
+    with st.expander("📄 Exportar informe PDF", expanded=False):
+        st.subheader("Exportar informe en PDF")
+        st.caption("El PDF incluye resumen, gráficos, rankings y detalle de críticos.")
+        title = st.text_input("Título del informe", value="QA Weekly Analytics — Informe", key="pdf_title")
+        generated_by = st.text_input("Preparado por (opcional)", value="", key="pdf_author")
+        additional_note = st.text_area("Nota adicional para el PDF (opcional)", value="", height=80, key="pdf_note")
+        default_name = f"qa_weekly_report_{kpis.start_date}_{kpis.end_date}.pdf"
+        if st.button("Generar PDF", type="primary", use_container_width=True, key="pdf_button"):
+            try:
+                pdf_bytes = build_pdf_report(
+                    kpis,
+                    title=title,
+                    generated_by=generated_by,
+                    additional_note=additional_note,
+                )
+                st.success("PDF generado correctamente ✅")
+                st.download_button(
+                    "Descargar informe PDF",
+                    data=pdf_bytes,
+                    file_name=default_name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except PDFReportError as exc:
+                logger.exception("No se pudo generar PDF")
+                st.error(str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Tab 1: Explorar Semanas
+# ---------------------------------------------------------------------------
+
+
+def _render_explore_tab(
+    df: pd.DataFrame,
+    selected_labels: list[str],
+    all_weeks: dict[str, DateRange],
+    agents: list[str] | None,
+    critical_only: bool,
+) -> None:
+    st.subheader("📊 Explorar Semanas")
+    st.caption("Selecciona una o más semanas para ver KPIs agregados y tendencia histórica.")
+
+    # Multiselect de semanas
+    if not all_weeks:
+        st.info("No hay semanas con datos para el año seleccionado.")
+        return
+
+    default_weeks = [list(all_weeks.keys())[-1]] if all_weeks else []
+    selected = st.multiselect(
+        "Semanas a consultar",
+        options=list(all_weeks.keys()),
+        default=selected_labels if selected_labels else default_weeks,
+        key="explore_weeks",
+    )
+
+    if not selected:
+        st.info("Selecciona al menos una semana para ver los KPIs.")
+        return
+
+    weeks = resolve_selected_weeks(selected, all_weeks)
+    if not weeks:
+        return
+
+    merged = merge_week_ranges(weeks)
+    critical_filter: bool | None = True if critical_only else None
+
+    kpis = compute_kpis(
+        df,
+        start_date=merged.start_date,
+        end_date=merged.end_date,
+        agents=agents,
+        critical=critical_filter,
+    )
+
+    st.caption(f"Rango: {kpis.start_date} → {kpis.end_date} | Filas: {kpis.filtered_rows}  |  Semanas seleccionadas: {len(weeks)}")
+    _render_kpi_cards(kpis)
+
+    # --- Tendencia semanal (una barra por semana) ---
+    st.subheader("Tendencia semanal")
+    weekly_data: list[tuple[str, int, int]] = []
+    for w in weeks:
+        label = iso_week_label(w)
+        week_kpis = compute_kpis(
+            df,
+            start_date=w.start_date,
+            end_date=w.end_date,
+            agents=agents,
+            critical=critical_filter,
+        )
+        weekly_data.append((label, week_kpis.total_errors, week_kpis.critical_count))
+
+    st.plotly_chart(weekly_trend_bar(weekly_data, title="Errores por semana"), use_container_width=True)
+
+    # --- Rankings ---
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("Top agentes")
+        st.plotly_chart(top_agents_bar(kpis), use_container_width=True, key="explore_top_agents")
+        st.dataframe(style_ranking_table(kpis.by_agent), use_container_width=True)
+
+    with col_b:
+        st.subheader("Top motivos")
+        st.plotly_chart(top_reasons_bar(kpis), use_container_width=True, key="explore_top_reasons")
+        st.dataframe(style_ranking_table(kpis.by_reason), use_container_width=True)
+
+    # Reincidencias
+    st.subheader("Reincidencias")
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        st.caption("Tickets repetidos")
+        st.dataframe(style_recurrence_table(kpis.recurrence["repeated_tickets"]), use_container_width=True)
+    with col_r2:
+        st.caption("Patrón repetido (agente + motivo)")
+        st.dataframe(style_recurrence_table(kpis.recurrence["repeated_agent_reason"]), use_container_width=True)
+
+    # Críticos
+    st.subheader("Detalle de críticos")
+    if kpis.critical_table.empty:
+        st.info("No hay errores críticos en el rango seleccionado.")
+    else:
+        st.dataframe(style_critical_table(kpis.critical_table), use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Tab 2: Comparar Semanas
+# ---------------------------------------------------------------------------
+
+
+def _render_compare_tab(
+    df: pd.DataFrame,
+    all_weeks: dict[str, DateRange],
+    agents: list[str] | None,
+    critical_only: bool,
+) -> None:
+    st.subheader("⚖️ Comparar Semanas")
+    st.caption("Compara dos semanas lado a lado para ver evolución.")
+
+    week_labels = list(all_weeks.keys())
+    if len(week_labels) < 2:
+        st.info("Se necesitan al menos 2 semanas con datos para comparar.")
+        return
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        week_a_label = st.selectbox("Semana A (base)", options=week_labels, index=max(0, len(week_labels) - 2), key="cmp_week_a")
+    with col_b:
+        week_b_label = st.selectbox("Semana B (comparar)", options=week_labels, index=len(week_labels) - 1, key="cmp_week_b")
+
+    if week_a_label == week_b_label:
+        st.warning("Selecciona dos semanas diferentes para comparar.")
+        return
+
+    week_a = all_weeks[week_a_label]
+    week_b = all_weeks[week_b_label]
+
+    # Asegurar orden cronológico
+    if week_a.start_date > week_b.start_date:
+        week_a, week_b = week_b, week_a
+        week_a_label, week_b_label = week_b_label, week_a_label
+
+    comparison = compare_weeks(df, week_a=week_a, week_b=week_b, agents=agents, critical_only=critical_only)
+
+    # --- KPI Cards comparativos ---
+    st.subheader("Resumen comparativo")
+    kcol1, kcol2, kcol3 = st.columns(3)
+    with kcol1:
+        delta_arrow = "↑" if comparison.delta_errors > 0 else ("↓" if comparison.delta_errors < 0 else "—")
+        delta_color = "inverse" if comparison.delta_errors > 0 else ("inverse" if comparison.delta_errors < 0 else "off")
+        st.metric(
+            f"{comparison.week_a_label}",
+            comparison.kpis_a.total_errors,
+        )
+    with kcol2:
+        st.metric(
+            f"{comparison.week_b_label}",
+            comparison.kpis_b.total_errors,
+            delta=f"{delta_arrow} {abs(comparison.delta_errors)}",
+            delta_color=delta_color,
+        )
+    with kcol3:
+        pct_str = f"{comparison.delta_pct:+.1%}"
+        st.metric("Variación %", pct_str)
+
+    # Críticos
+    ccol1, ccol2 = st.columns(2)
+    with ccol1:
+        st.metric("Críticos — A", comparison.kpis_a.critical_count)
+    with ccol2:
+        st.metric(
+            "Críticos — B",
+            comparison.kpis_b.critical_count,
+            delta=f"{comparison.delta_critical:+d}",
+        )
+
+    # --- Gráfico side-by-side ---
+    st.subheader("Comparación por agente")
+    st.plotly_chart(
+        comparison_side_by_side(
+            comparison.week_a_label,
+            comparison.week_b_label,
+            comparison.kpis_a,
+            comparison.kpis_b,
+        ),
+        use_container_width=True,
+    )
+
+    # --- Movimiento de agentes ---
+    st.subheader("Movimiento de agentes")
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    with mc1:
+        st.metric("🟢 Mejoraron", len(comparison.agents_improved))
+        if comparison.agents_improved:
+            st.caption(", ".join(comparison.agents_improved[:5]))
+    with mc2:
+        st.metric("🔴 Empeoraron", len(comparison.agents_declined))
+        if comparison.agents_declined:
+            st.caption(", ".join(comparison.agents_declined[:5]))
+    with mc3:
+        st.metric("🟡 Nuevos", len(comparison.agents_new))
+        if comparison.agents_new:
+            st.caption(", ".join(comparison.agents_new[:5]))
+    with mc4:
+        st.metric("⚪ Resueltos", len(comparison.agents_resolved))
+        if comparison.agents_resolved:
+            st.caption(", ".join(comparison.agents_resolved[:5]))
+
+
+# ---------------------------------------------------------------------------
+# Tab 3: Detalle por Agente
+# ---------------------------------------------------------------------------
+
+
+def _render_agent_tab(
+    df: pd.DataFrame,
+    agent: str,
+    all_weeks: dict[str, DateRange],
+    critical_only: bool,
+) -> None:
+    st.subheader(f"👤 Detalle — {agent}")
+    st.caption("Comportamiento del agente a lo largo de las semanas seleccionadas.")
+
+    if not all_weeks:
+        st.info("No hay semanas con datos.")
+        return
+
+    week_labels = list(all_weeks.keys())
+    selected_labels = st.multiselect(
+        "Semanas a analizar",
+        options=week_labels,
+        default=week_labels[-4:] if len(week_labels) >= 4 else week_labels,
+        key="agent_detail_weeks",
+    )
+
+    if not selected_labels:
+        st.info("Selecciona al menos una semana.")
+        return
+
+    weeks = resolve_selected_weeks(selected_labels, all_weeks)
+    critical_filter: bool | None = True if critical_only else None
+
+    # KPIs agregados del agente
+    merged = merge_week_ranges(weeks)
+    kpis = compute_kpis(
+        df,
+        start_date=merged.start_date,
+        end_date=merged.end_date,
+        agents=[agent],
+        critical=critical_filter,
+    )
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.subheader("Agentes Subsanados")
-        if wow_results.corrected_agents:
-            st.dataframe(pd.DataFrame(wow_results.corrected_agents, columns=["Agente"]), use_container_width=True)
-        else:
-            st.caption("No hay agentes en esta categoría.")
+        st.metric("Total errores", kpis.total_errors)
     with col2:
-        st.subheader("Nuevos en Alerta")
-        if wow_results.new_alert_agents:
-            st.dataframe(pd.DataFrame(wow_results.new_alert_agents, columns=["Agente"]), use_container_width=True)
-        else:
-            st.caption("No hay agentes en esta categoría.")
+        st.metric("Críticos", kpis.critical_count)
     with col3:
-        st.subheader("Agentes Persistentes")
-        if wow_results.persistent_agents:
-            st.dataframe(pd.DataFrame(wow_results.persistent_agents, columns=["Agente"]), use_container_width=True)
+        st.metric("Tasa criticidad", f"{kpis.critical_pct:.1%}")
+
+    # Tendencia semanal del agente
+    st.subheader("Tendencia semanal")
+    agent_weekly: list[tuple[str, int]] = []
+    for w in weeks:
+        label = iso_week_label(w)
+        wk = compute_kpis(
+            df,
+            start_date=w.start_date,
+            end_date=w.end_date,
+            agents=[agent],
+            critical=critical_filter,
+        )
+        agent_weekly.append((label, wk.total_errors))
+
+    st.plotly_chart(agent_trend_line(agent_weekly, agent), use_container_width=True)
+
+    # Motivos del agente
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("Motivos")
+        if kpis.by_reason.empty:
+            st.caption("Sin errores en el periodo.")
         else:
-            st.caption("No hay agentes en esta categoría.")
+            st.dataframe(style_ranking_table(kpis.by_reason), use_container_width=True)
+    with col_b:
+        st.subheader("Reincidencias agente + motivo")
+        st.dataframe(style_recurrence_table(kpis.recurrence["repeated_agent_reason"]), use_container_width=True)
+
+    # Críticos del agente
+    if not kpis.critical_table.empty:
+        st.subheader("Detalle críticos")
+        st.dataframe(style_critical_table(kpis.critical_table), use_container_width=True)
 
 
-def _render_pdf_tab(kpis: object, wow_results: WoWRecurrenceResult, comparison_label: str, recurrent_agents_comparison: pd.DataFrame) -> None:
-    st.subheader("Exportar informe en PDF")
-    st.caption("El PDF incluye resumen, gráficos, evolución semanal, rankings, reincidencias y detalle de críticos.")
-    title = st.text_input("Título del informe", value="QA Weekly Analytics — Informe")
-    generated_by = st.text_input("Preparado por (opcional)", value="")
-    additional_note = st.text_area("Nota adicional para el PDF (opcional)", value="", height=100)
-    default_name = f"qa_weekly_report_{kpis.start_date}_{kpis.end_date}.pdf"
-    if st.button("Generar PDF", type="primary", use_container_width=True):
-        try:
-            pdf_bytes = build_pdf_report(
-                kpis,
-                title=title,
-                generated_by=generated_by,
-                additional_note=additional_note,
-                wow_results=wow_results,
-                comparison_label=comparison_label,
-                recurrent_agents_comparison=recurrent_agents_comparison,
-            )
-            st.success("PDF generado correctamente ✅")
-            st.download_button("Descargar informe PDF", data=pdf_bytes, file_name=default_name, mime="application/pdf", use_container_width=True)
-        except PDFReportError as exc:
-            logger.exception("No se pudo generar PDF")
-            st.error(str(exc))
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -359,19 +420,18 @@ def main() -> None:
     st.set_page_config(page_title="QA Weekly Analytics", layout="wide")
     st.title("QA Weekly Analytics — Dashboard")
 
+    # --- Settings ---
     try:
         settings = Settings.from_env()
     except SettingsError as exc:
         st.error(f"Configuración inválida: {exc}")
         st.stop()
 
-    start_scheduler(settings)
-
+    # --- Carga de datos ---
     with st.sidebar:
-        st.header("Controles")
-        st.caption("Fuente: Google Sheets")
-        st.code(f"Tab: {settings.SHEET_TAB}\nRango: {settings.SHEET_RANGE}", language="text")
-        if st.button("Refrescar datos", use_container_width=True):
+        st.header("🔧 Controles")
+        st.caption(f"Fuente: Google Sheets · Tab: {settings.SHEET_TAB}")
+        if st.button("🔄 Refrescar datos", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
@@ -383,160 +443,89 @@ def main() -> None:
         st.stop()
 
     _render_quality_report(quality_report)
+
     if df.empty:
         st.warning("No hay filas válidas tras QA-005.")
         st.stop()
 
-    opts = get_filter_options(df)
-    available_weeks = list_monday_friday_weeks(df)
-    week_options = week_options_for_ui(available_weeks)
+    # --- Opciones de UI desde datos ---
+    opts: FilterOptions = get_filter_options(df)
+    years: list[int] = available_years(df)
 
-    if "start_date" not in st.session_state or "end_date" not in st.session_state:
-        start_default, end_default = compute_default_range(settings.TIMEZONE)
-        st.session_state["start_date"] = start_default
-        st.session_state["end_date"] = end_default
-
+    # --- Sidebar ---
     with st.sidebar:
-        st.subheader("Rango de fechas")
-        use_week_picker = st.toggle("Seleccionar por semanas", value=False)
-        selected_week_labels: list[str] = []
-        if use_week_picker and week_options:
-            if st.button("Preset: Quincena (2 semanas)", use_container_width=True):
-                st.session_state["selected_weeks"] = quincena_preset_labels(week_options, 2)
-            selected_week_labels = st.multiselect(
-                "Semanas L–V",
-                options=list(week_options.keys()),
-                default=st.session_state.get("selected_weeks", quincena_preset_labels(week_options, 1)),
-                key="week_multiselect",
-            )
-            st.session_state["selected_weeks"] = selected_week_labels
-        else:
-            if st.button("Semana anterior (L–V)", use_container_width=True):
-                start_default, end_default = compute_default_range(settings.TIMEZONE)
-                st.session_state["start_date"] = start_default
-                st.session_state["end_date"] = end_default
-            start_date = st.date_input("Desde", value=st.session_state["start_date"])
-            end_date = st.date_input("Hasta", value=st.session_state["end_date"])
-            st.session_state["start_date"] = start_date
-            st.session_state["end_date"] = end_date
+        st.subheader("📅 Periodo")
+        selected_year = st.selectbox(
+            "Año",
+            options=years,
+            index=0 if years else 0,
+            key="sidebar_year",
+        )
+        st.subheader("👥 Filtros")
+        agent_choice = st.selectbox(
+            "Agente",
+            options=["Todos"] + opts.agents,
+            index=0,
+            key="sidebar_agent",
+        )
+        critical_only = st.toggle("Solo críticos", value=False, key="sidebar_critical")
 
-        st.subheader("Filtros")
-        agents = st.multiselect("Agente", options=opts.agents, default=[])
-        reasons = st.multiselect("Motivo", options=opts.reasons, default=[])
-        critical_choice = st.selectbox("Crítico", ["Todos", "Sólo críticos", "Sólo no críticos"], index=0)
+    # --- Datos del año seleccionado ---
+    all_weeks = get_available_weeks(df, selected_year)
 
-    effective_start, effective_end = _apply_week_selection_to_dates(
-        df,
-        use_week_picker=use_week_picker,
-        selected_week_labels=selected_week_labels,
-        week_options=week_options,
-    )
-
-    if effective_start > effective_end:
-        st.error("Rango inválido: 'Desde' no puede ser mayor que 'Hasta'.")
+    if not all_weeks:
+        st.warning(f"No hay semanas con datos para el año {selected_year}.")
         st.stop()
 
-    critical = map_critical_choice(critical_choice)
-    kpis = compute_kpis(
-        df,
-        start_date=effective_start,
-        end_date=effective_end,
-        agents=agents or None,
-        reasons=reasons or None,
-        critical=critical,
-    )
+    # --- Resolver agente ---
+    agents_filter: list[str] | None = None
+    selected_agent: str | None = None
+    if agent_choice != "Todos":
+        agents_filter = [agent_choice]
+        selected_agent = agent_choice
 
-    current_range, previous_range = comparison_ranges_for_period(effective_start, effective_end)
-    wow_recurrence_kpis = analyze_wow_recurrence(df, current_week=current_range, previous_week=previous_range)
-    comparison_lbl = comparison_label(current_range, previous_range)
-    recurrent_agents_comparison = _build_recurrent_agents_comparison(
-        df,
-        current_range=current_range,
-        previous_range=previous_range,
-        wow_results=wow_recurrence_kpis,
-    )
+    # --- Tabs principales ---
+    tab1, tab2, tab3 = st.tabs(["📊 Explorar", "⚖️ Comparar", "👤 Detalle Agente"])
 
-    st.caption(f"Rango: {kpis.start_date} → {kpis.end_date} | Filas tras filtros: {kpis.filtered_rows}")
-    _render_kpi_cards(kpis)
-    st.divider()
-
-    tabs = st.tabs(["Resumen", "Agentes", "Motivos", "Tendencia", "Críticos", "Evolución Semanal", "Modo 1:1", "Histórico", "PDF"])
-
-    with tabs[0]:
-        st.subheader("Resumen visual")
-        st.plotly_chart(trend_lv_bar(kpis), use_container_width=True, key="plot_resumen_trend_lv")
-        col_left, col_right = st.columns(2)
-        with col_left:
-            st.subheader("Top agentes")
-            st.plotly_chart(top_agents_bar(kpis), use_container_width=True, key="plot_resumen_top_agents")
-        with col_right:
-            st.subheader("Top motivos")
-            st.plotly_chart(top_reasons_bar(kpis), use_container_width=True, key="plot_resumen_top_reasons")
-        st.subheader("Reincidencias")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.caption("Tickets repetidos (ticket_id)")
-            st.dataframe(style_recurrence_table(kpis.recurrence["repeated_tickets"]), use_container_width=True)
-        with col_b:
-            st.caption("Patrón repetido (agente + motivo)")
-            st.dataframe(style_recurrence_table(kpis.recurrence["repeated_agent_reason"]), use_container_width=True)
-
-    with tabs[1]:
-        st.subheader("Ranking por agente")
-        st.plotly_chart(top_agents_bar(kpis), use_container_width=True, key="plot_agentes_top_agents")
-        st.subheader("Pareto 80/20 — Agentes")
-        st.plotly_chart(pareto_agents_chart(kpis), use_container_width=True, key="plot_agentes_pareto_agents")
-        st.dataframe(style_ranking_table(kpis.by_agent), use_container_width=True)
-
-    with tabs[2]:
-        st.subheader("Ranking por motivo")
-        st.plotly_chart(top_reasons_bar(kpis), use_container_width=True, key="plot_motivos_top_reasons")
-        st.dataframe(style_ranking_table(kpis.by_reason), use_container_width=True)
-
-    with tabs[3]:
-        st.subheader("Tendencia diaria L–V")
-        st.plotly_chart(trend_lv_bar(kpis), use_container_width=True, key="plot_tendencia_trend_lv")
-        st.subheader("Críticos vs no críticos")
-        st.plotly_chart(critical_vs_non_critical_stacked(df, start_date=effective_start, end_date=effective_end, agents=agents or None, reasons=reasons or None), use_container_width=True, key="plot_tendencia_critical_vs_non_critical")
-
-    with tabs[4]:
-        st.subheader("Detalle de críticos")
-        if kpis.critical_table.empty:
-            st.info("No hay errores críticos en el rango/filtros seleccionados.")
-        else:
-            st.dataframe(style_critical_table(kpis.critical_table), use_container_width=True)
-
-    with tabs[5]:
-        _render_wow_recurrence_tab(wow_recurrence_kpis, comparison_lbl)
-
-    with tabs[6]:
-        _render_one_on_one_tab(
+    with tab1:
+        _render_explore_tab(
             df,
-            start_date=effective_start,
-            end_date=effective_end,
-            agents=opts.agents,
-            reasons=reasons,
-            critical=critical,
-            wow_results=wow_recurrence_kpis,
-            comparison_lbl=comparison_lbl,
-            recurrent_agents_comparison=recurrent_agents_comparison,
+            selected_labels=[],
+            all_weeks=all_weeks,
+            agents=agents_filter,
+            critical_only=critical_only,
         )
 
-    with tabs[7]:
-        _render_publish_section(df, settings)
-        excel_path = settings.historic_excel_path_resolved(_REPO_ROOT)
-        st.caption(f"Excel histórico: {excel_path}")
-        if excel_path.exists():
-            st.download_button(
-                "Descargar Excel histórico",
-                data=excel_path.read_bytes(),
-                file_name=excel_path.name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+    with tab2:
+        _render_compare_tab(
+            df,
+            all_weeks=all_weeks,
+            agents=agents_filter,
+            critical_only=critical_only,
+        )
 
-    with tabs[8]:
-        _render_pdf_tab(kpis, wow_recurrence_kpis, comparison_lbl, recurrent_agents_comparison)
+    with tab3:
+        if selected_agent:
+            _render_agent_tab(
+                df,
+                agent=selected_agent,
+                all_weeks=all_weeks,
+                critical_only=critical_only,
+            )
+        else:
+            st.info("👈 Selecciona un agente en el panel lateral para ver su detalle.")
+
+    # --- PDF Export (expander al final) ---
+    if all_weeks:
+        latest_week = all_weeks[list(all_weeks.keys())[-1]]
+        kpis_pdf = compute_kpis(
+            df,
+            start_date=latest_week.start_date,
+            end_date=latest_week.end_date,
+            agents=agents_filter,
+            critical=True if critical_only else None,
+        )
+        _render_pdf_export(kpis_pdf)
 
 
 if __name__ == "__main__":

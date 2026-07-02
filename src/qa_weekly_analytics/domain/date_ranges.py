@@ -200,6 +200,91 @@ def week_label(week_range: DateRange) -> str:
     return f"{week_range.start_date.strftime('%d/%m/%Y')} – {week_range.end_date.strftime('%d/%m/%Y')} (L-V)"
 
 
+def iso_week_number(week_range: DateRange) -> tuple[int, int]:
+    """Devuelve (año_ISO, número_semana_ISO) para el lunes del rango L–V.
+
+    Usa el calendario ISO 8601: la semana pertenece al año que contiene
+    el jueves de esa semana. Como nuestro rango es L–V, tomamos el lunes
+    como referencia.
+
+    Args:
+        week_range: Rango L–V.
+
+    Returns:
+        Tupla (year, week_number).
+    """
+    iso = week_range.start_date.isocalendar()
+    return iso[0], iso[1]
+
+
+def iso_week_label(week_range: DateRange) -> str:
+    """Etiqueta con número ISO: 'S27 — 30/06/2026 a 04/07/2026'.
+
+    Args:
+        week_range: Rango L–V.
+
+    Returns:
+        String legible para UI.
+    """
+    year, week_num = iso_week_number(week_range)
+    start_str = week_range.start_date.strftime("%d/%m/%Y")
+    end_str = week_range.end_date.strftime("%d/%m/%Y")
+    return f"S{week_num} — {start_str} a {end_str}"
+
+
+def get_year_weeks(
+    df: pd.DataFrame,
+    year: int,
+    *,
+    date_col: str = "date",
+    min_rows: int = 1,
+) -> dict[str, DateRange]:
+    """Devuelve semanas L–V con datos para un año, etiquetadas con ISO.
+
+    Las semanas se ordenan de más antigua a más reciente en el dict
+    (Python 3.7+ preserva orden de inserción).
+
+    Args:
+        df: DataFrame normalizado con columna de fechas.
+        year: Año a filtrar.
+        date_col: Nombre de la columna de fecha.
+        min_rows: Mínimo de registros para considerar una semana válida.
+
+    Returns:
+        Dict {label_iso: DateRange} ordenado cronológicamente.
+    """
+    all_weeks = list_monday_friday_weeks(df, date_col=date_col, min_rows=min_rows)
+    year_weeks_raw = [w for w in all_weeks if iso_week_number(w)[0] == year]
+    # Ordenar de más antigua a más reciente
+    year_weeks_raw.sort(key=lambda w: w.start_date)
+
+    result: dict[str, DateRange] = {}
+    for w in year_weeks_raw:
+        label = iso_week_label(w)
+        result[label] = w
+
+    return result
+
+
+def available_years(df: pd.DataFrame, *, date_col: str = "date") -> list[int]:
+    """Devuelve los años con datos en el DataFrame, orden descendente.
+
+    Args:
+        df: DataFrame normalizado.
+        date_col: Nombre de la columna de fecha.
+
+    Returns:
+        Lista de años (int) ordenada del más reciente al más antiguo.
+    """
+    if df.empty or date_col not in df.columns:
+        return []
+    dates = pd.to_datetime(df[date_col], errors="coerce").dt.date.dropna()
+    if dates.empty:
+        return []
+    years = sorted({d.year for d in dates}, reverse=True)
+    return years
+
+
 def merge_week_ranges(ranges: list[DateRange]) -> DateRange:
     """Une varias semanas en un rango continuo (min start, max end)."""
     if not ranges:

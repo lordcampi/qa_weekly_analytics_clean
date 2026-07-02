@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Iterable, Optional
 
 import pandas as pd
 
-from qa_weekly_analytics.domain.date_ranges import DateRange, previous_week_monday_friday, week_label
+from qa_weekly_analytics.domain.date_ranges import DateRange, get_year_weeks
 
 logger = logging.getLogger(__name__)
 
@@ -27,20 +25,6 @@ class FilterOptions:
 
     agents: list[str]
     reasons: list[str]
-
-
-def compute_default_range(tz_name: str, now: datetime | None = None) -> tuple[date, date]:
-    """Devuelve el rango por defecto: semana anterior (L–V) en tz_name.
-
-    Args:
-        tz_name: Zona horaria IANA (ej. 'America/Bogota').
-        now: Momento de referencia (opcional).
-
-    Returns:
-        (start_date, end_date) inclusive.
-    """
-    rng = previous_week_monday_friday(tz_name=tz_name, now=now)
-    return rng.start_date, rng.end_date
 
 
 def map_critical_choice(choice: str) -> bool | None:
@@ -85,17 +69,35 @@ def get_filter_options(df: pd.DataFrame) -> FilterOptions:
     return FilterOptions(agents=agents, reasons=reasons)
 
 
-def week_options_for_ui(weeks: list[DateRange]) -> dict[str, DateRange]:
-    """Mapa etiqueta legible -> DateRange para multiselect."""
-    return {week_label(w): w for w in weeks}
+def resolve_selected_weeks(
+    selected_labels: list[str],
+    all_weeks: dict[str, DateRange],
+) -> list[DateRange]:
+    """Resuelve etiquetas de semana a DateRanges, en orden cronológico.
+
+    Args:
+        selected_labels: Lista de etiquetas ISO (ej: 'S27 — 30/06/2026 a 04/07/2026').
+        all_weeks: Dict {label: DateRange} del año.
+
+    Returns:
+        Lista de DateRange en orden cronológico.
+    """
+    resolved = [all_weeks[label] for label in selected_labels if label in all_weeks]
+    resolved.sort(key=lambda w: w.start_date)
+    return resolved
 
 
-def resolve_selected_weeks(selected_labels: list[str], options: dict[str, DateRange]) -> list[DateRange]:
-    """Resuelve semanas seleccionadas desde etiquetas UI."""
-    return [options[label] for label in selected_labels if label in options]
+def get_available_weeks(
+    df: pd.DataFrame,
+    year: int,
+) -> dict[str, DateRange]:
+    """Wrapper sobre get_year_weeks con manejo defensivo.
 
+    Args:
+        df: DataFrame normalizado.
+        year: Año a consultar.
 
-def quincena_preset_labels(options: dict[str, DateRange], count: int = 2) -> list[str]:
-    """Devuelve las N semanas más recientes (default quincena = 2)."""
-    labels = list(options.keys())
-    return labels[:count]
+    Returns:
+        Dict {label_iso: DateRange}.
+    """
+    return get_year_weeks(df, year, min_rows=1)
