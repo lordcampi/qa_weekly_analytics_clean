@@ -1,4 +1,5 @@
 """Entry point para Streamlit Cloud. Redirige al módulo real de la app."""
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -62,16 +63,53 @@ def _diagnostic_secrets_banner() -> str | None:
             except Exception:
                 pass
 
+        env_data_url = os.getenv("DATA_URL", "(no definida)")
+
         details = (
             f"\n\n--- Diagnóstico de secrets ---\n"
             f"Claves disponibles en st.secrets: {available_keys}\n"
-            f"Valor leído de DATA_URL: {data_url_raw!r}\n"
+            f"Valor leído de DATA_URL (st.secrets): {data_url_raw!r}\n"
+            f"Valor de os.getenv('DATA_URL'): {env_data_url!r}\n"
             f"Tipo de st.secrets: {type(secrets).__name__}\n"
             f"---\n"
         )
         return details
     except Exception as exc:
         return f"\n\n--- Diagnóstico de secrets ---\nNo se pudo acceder a st.secrets: {exc}\n---\n"
+
+
+def _pre_main_diagnostics() -> list[str]:
+    """Ejecuta diagnósticos antes de main() y devuelve una lista de problemas."""
+    warnings: list[str] = []
+
+    # Verificar DATA_URL en secrets y env
+    data_url_secrets = None
+    data_url_env = os.getenv("DATA_URL")
+
+    try:
+        import streamlit as st
+        try:
+            data_url_secrets = st.secrets["DATA_URL"]
+        except Exception:
+            try:
+                data_url_secrets = getattr(st.secrets, "DATA_URL", None)
+            except Exception:
+                try:
+                    data_url_secrets = st.secrets.get("DATA_URL")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    if not data_url_secrets and not data_url_env:
+        diag = _diagnostic_secrets_banner()
+        if diag:
+            warnings.append(
+                "⚠️ No se encontró DATA_URL en st.secrets ni en variables de entorno. "
+                "La app probablemente fallará al cargar la configuración."
+                + diag
+            )
+    return warnings
 
 
 if __name__ == "__main__":
@@ -83,6 +121,20 @@ if __name__ == "__main__":
         )
     else:
         assert main is not None  # garantizado por el else
+
+        # Diagnóstico pre-ejecución
+        pre_warnings = _pre_main_diagnostics()
+        if pre_warnings:
+            try:
+                import streamlit as st
+                st.set_page_config(page_title="QA Weekly — Diagnóstico", layout="wide")
+                st.warning("Diagnóstico pre-arranque detectó problemas potenciales:")
+                for w in pre_warnings:
+                    st.info(w)
+                st.divider()
+            except Exception:
+                pass
+
         try:
             main()
         except SystemExit:

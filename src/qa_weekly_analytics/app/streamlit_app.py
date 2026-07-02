@@ -405,7 +405,7 @@ def main() -> None:
             settings = Settings.from_env()
         except SettingsError as exc:
             st.error(f"Configuración inválida: {exc}")
-            st.stop()
+            return
 
     # Carga de datos (CSV público)
     with st.sidebar:
@@ -420,13 +420,13 @@ def main() -> None:
     except RuntimeError as exc:
         st.error("No se pudo cargar/limpiar los datos desde la URL configurada.")
         st.exception(exc)
-        st.stop()
+        return
 
     _render_quality_report(quality_report)
 
     if df.empty:
         st.warning("No hay filas válidas tras QA-005.")
-        st.stop()
+        return
 
     opts: FilterOptions = get_filter_options(df)
     years: list[int] = available_years(df)

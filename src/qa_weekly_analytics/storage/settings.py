@@ -102,39 +102,54 @@ class Settings(BaseModel):
     def from_streamlit_secrets(cls) -> "Settings":
         """Carga la configuración desde st.secrets (Streamlit Cloud).
 
+        Intenta primero st.secrets, luego variables de entorno (os.getenv).
+        Streamlit Cloud exporta los secrets como variables de entorno
+        automáticamente, así que os.getenv() es un fallback confiable.
+
         Cualquier error al acceder o usar st.secrets (incluyendo
-        StreamlitSecretNotFoundError cuando no existe secrets.toml) se
-        convierte en SettingsError para que el caller pueda hacer fallback.
+        StreamlitSecretNotFoundError cuando no existe secrets.toml) hace
+        fallback a os.getenv antes de lanzar SettingsError.
         """
         try:
             import streamlit as st  # type: ignore[import-untyped]
         except ImportError:
             raise SettingsError("Streamlit no está disponible") from None
 
-        try:
-            secrets = st.secrets
-
-            # Función auxiliar que prueba múltiples formas de acceso a secrets
-            def _read_secret(key: str, default: str = "") -> str:
-                """Lee un secreto de st.secrets probando varias formas de acceso."""
-                # 1) Acceso como clave de dict (más común en Streamlit Cloud)
-                try:
-                    val = secrets[key]
+        def _read_secret(key: str, default: str = "") -> str:
+            """Lee un secreto probando: st.secrets → os.getenv → default."""
+            # 1) Acceso como clave de dict (más común en Streamlit Cloud)
+            try:
+                val = st.secrets[key]
+                if val is not None and str(val).strip():
                     return str(val)
-                except (KeyError, TypeError):
-                    pass
+            except (KeyError, TypeError, Exception):
+                pass
 
-                # 2) Acceso como atributo (AttrDict de Streamlit a veces funciona así)
-                try:
-                    val = getattr(secrets, key, None)
-                    if val is not None:
-                        return str(val)
-                except Exception:
-                    pass
+            # 2) Acceso como atributo (AttrDict de Streamlit)
+            try:
+                val = getattr(st.secrets, key, None)
+                if val is not None and str(val).strip():
+                    return str(val)
+            except Exception:
+                pass
 
-                # 3) Último recurso: .get() tradicional
-                return str(secrets.get(key, default))
+            # 3) .get() tradicional
+            try:
+                val = st.secrets.get(key)
+                if val is not None and str(val).strip():
+                    return str(val)
+            except Exception:
+                pass
 
+            # 4) Fallback: variable de entorno (Streamlit Cloud las exporta)
+            env_val = os.getenv(key)
+            if env_val is not None and env_val.strip():
+                logger.info("Leyendo %s desde os.getenv (fallback de secrets)", key)
+                return env_val.strip()
+
+            return default
+
+        try:
             sched_enabled = _read_secret("SCHEDULER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
             settings = cls(
@@ -146,12 +161,13 @@ class Settings(BaseModel):
                 SCHEDULER_CRON_HOUR=int(_read_secret("SCHEDULER_CRON_HOUR", "8")),
                 SCHEDULER_CRON_MINUTE=int(_read_secret("SCHEDULER_CRON_MINUTE", "0")),
             )
-            logger.info("Settings cargados desde st.secrets")
+            logger.info("Settings cargados desde st.secrets / env")
             return settings
         except ValidationError as exc:
             summary = _summarize_validation_error(exc)
             # Intenta mostrar las claves disponibles para diagnóstico
             available_keys = []
+            env_data_url = os.getenv("DATA_URL", "(no definida)")
             try:
                 secrets = st.secrets
                 if hasattr(secrets, "keys"):
@@ -159,11 +175,14 @@ class Settings(BaseModel):
                 else:
                     available_keys = [k for k in dir(secrets) if not k.startswith("_")]
             except Exception:
-                pass
-            extra_info = f" (claves disponibles: {available_keys})" if available_keys else ""
+                available_keys = ["(error al leer secrets)"]
+            extra_info = (
+                f" (claves st.secrets: {available_keys}, "
+                f"os.getenv('DATA_URL'): {env_data_url!r})"
+            )
             logger.error(
                 "Error validando Settings desde secrets",
-                extra={"summary": summary, "available_keys": available_keys},
+                extra={"summary": summary, "available_keys": available_keys, "env_DATA_URL": env_data_url},
             )
             raise SettingsError(f"Configuración inválida (secrets): {summary}{extra_info}") from exc
         except Exception as exc:
