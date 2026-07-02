@@ -5,10 +5,17 @@ import os
 import re
 from pathlib import Path
 
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 logger = logging.getLogger(__name__)
+
+# URL pública del CSV de Google Sheets. Este valor no cambia y sirve como
+# fallback por defecto si no se configura vía st.secrets o variable de entorno.
+_DEFAULT_DATA_URL = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vQQD6MKPr3GdkQLasmOJVp8qQA2euQy0hYNTpUOXbrNAZ90H1_vIBNeDzI26VMR3LG3WpJpZvbYGGGj/"
+    "pub?gid=0&single=true&output=csv"
+)
 
 
 class SettingsError(Exception):
@@ -34,7 +41,7 @@ class Settings(BaseModel):
     """Configuración central del proyecto QA Weekly Analytics."""
 
     # Fuente de datos: URL pública de Google Sheets publicada como CSV
-    DATA_URL: str = Field(..., min_length=10)
+    DATA_URL: str = Field(default=_DEFAULT_DATA_URL, min_length=10)
 
     # Timezone
     TIMEZONE: str = Field(default="America/Bogota")
@@ -76,15 +83,25 @@ class Settings(BaseModel):
             raise ValueError("DATA_URL debe comenzar con http:// o https://")
         return url
 
+    @staticmethod
+    def _try_load_dotenv() -> None:
+        """Intenta cargar .env si existe en la raíz del proyecto (no falla si no está)."""
+        try:
+            _env_path = Path(__file__).resolve().parents[3] / ".env"
+            if _env_path.exists():
+                from dotenv import load_dotenv
+                load_dotenv(dotenv_path=_env_path)
+        except Exception:
+            pass
+
     @classmethod
     def from_env(cls) -> "Settings":
         """Carga la configuración desde variables de entorno (incluye .env)."""
-        _env_path = Path(__file__).resolve().parents[3] / ".env"
-        load_dotenv(dotenv_path=_env_path)
+        cls._try_load_dotenv()
         try:
             sched_enabled = (os.getenv("SCHEDULER_ENABLED", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
             settings = cls(
-                DATA_URL=os.getenv("DATA_URL", ""),
+                DATA_URL=os.getenv("DATA_URL", _DEFAULT_DATA_URL),
                 TIMEZONE=os.getenv("TIMEZONE", "America/Bogota"),
                 HISTORIC_EXCEL_PATH=os.getenv("HISTORIC_EXCEL_PATH", "data/Registro_QA_Historico.xlsx"),
                 SCHEDULER_ENABLED=sched_enabled,
@@ -154,7 +171,7 @@ class Settings(BaseModel):
             sched_enabled = _read_secret("SCHEDULER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
             settings = cls(
-                DATA_URL=_read_secret("DATA_URL"),
+                DATA_URL=_read_secret("DATA_URL", _DEFAULT_DATA_URL),
                 TIMEZONE=_read_secret("TIMEZONE", "America/Bogota"),
                 HISTORIC_EXCEL_PATH=_read_secret("HISTORIC_EXCEL_PATH", "data/Registro_QA_Historico.xlsx"),
                 SCHEDULER_ENABLED=sched_enabled,
