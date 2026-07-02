@@ -8,13 +8,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from qa_weekly_analytics.storage.historic_schema import (
-    TAB_POR_AGENTE,
-    TAB_POR_MOTIVO,
-    TAB_RESUMEN,
-    TAB_WOW,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -23,48 +16,30 @@ class SettingsError(Exception):
 
 
 def _summarize_validation_error(exc: ValidationError) -> str:
-    """Resume errores de validación sin incluir valores sensibles.
-
-    Args:
-        exc: ValidationError de Pydantic.
-
-    Returns:
-        Mensaje resumido con campos y errores (sin incluir el valor inválido).
-    """
+    """Resume errores de validación sin incluir valores sensibles."""
     chunks: list[str] = []
     for err in exc.errors():
         loc = err.get("loc", ())
         msg = err.get("msg", "invalid")
-
         field = "unknown"
         if isinstance(loc, (list, tuple)) and loc:
             field = str(loc[0])
             if len(loc) > 1 and isinstance(loc[1], int):
                 field = f"{field}[{loc[1]}]"
-
         chunks.append(f"{field}: {msg}")
-
     return "; ".join(chunks)
 
 
 class Settings(BaseModel):
     """Configuración central del proyecto QA Weekly Analytics."""
 
-    # Sheets
-    SHEET_ID: str = Field(..., min_length=5)
-    SHEET_TAB: str = Field(default="Operativa 2026")
-    SHEET_RANGE: str = Field(default="A1:G1619")
+    # Fuente de datos: URL pública de Google Sheets publicada como CSV
+    DATA_URL: str = Field(..., min_length=10)
 
     # Timezone
     TIMEZONE: str = Field(default="America/Bogota")
 
-    # Histórico — pestañas en Google Sheets
-    HIST_TAB_RESUMEN: str = Field(default=TAB_RESUMEN)
-    HIST_TAB_POR_AGENTE: str = Field(default=TAB_POR_AGENTE)
-    HIST_TAB_POR_MOTIVO: str = Field(default=TAB_POR_MOTIVO)
-    HIST_TAB_WOW: str = Field(default=TAB_WOW)
-
-    # Histórico — Excel local
+    # Excel local (descarga opcional)
     HISTORIC_EXCEL_PATH: str = Field(default="data/Registro_QA_Historico.xlsx")
 
     # Scheduler (APScheduler)
@@ -84,52 +59,39 @@ class Settings(BaseModel):
     @field_validator("TIMEZONE")
     @classmethod
     def validate_timezone(cls, v: str) -> str:
-        """Valida formato básico de timezone IANA (ej: America/Bogota).
-
-        Args:
-            v: Timezone.
-
-        Returns:
-            Timezone normalizada.
-
-        Raises:
-            ValueError: Si no tiene el formato esperado.
-        """
+        """Valida formato básico de timezone IANA."""
         tz = (v or "").strip()
         if not re.match(r"^[A-Za-z_]+/[A-Za-z_]+$", tz):
             raise ValueError("TIMEZONE inválida (ej: America/Bogota)")
         return tz
 
+    @field_validator("DATA_URL")
+    @classmethod
+    def validate_data_url(cls, v: str) -> str:
+        """Acepta URL de Google Sheets publicado como CSV."""
+        url = (v or "").strip()
+        if not url:
+            raise ValueError("DATA_URL es requerida")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError("DATA_URL debe comenzar con http:// o https://")
+        return url
+
     @classmethod
     def from_env(cls) -> "Settings":
-        """Carga la configuración desde variables de entorno (incluye .env).
-
-        Returns:
-            Settings: Instancia validada.
-
-        Raises:
-            SettingsError: Si faltan variables requeridas o hay valores inválidos.
-        """
+        """Carga la configuración desde variables de entorno (incluye .env)."""
         load_dotenv()
-
         try:
             sched_enabled = (os.getenv("SCHEDULER_ENABLED", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
             settings = cls(
-                SHEET_ID=os.getenv("SHEET_ID", ""),
-                SHEET_TAB=os.getenv("SHEET_TAB", "Operativa 2026"),
-                SHEET_RANGE=os.getenv("SHEET_RANGE", "A1:G1619"),
+                DATA_URL=os.getenv("DATA_URL", ""),
                 TIMEZONE=os.getenv("TIMEZONE", "America/Bogota"),
-                HIST_TAB_RESUMEN=os.getenv("HIST_TAB_RESUMEN", TAB_RESUMEN),
-                HIST_TAB_POR_AGENTE=os.getenv("HIST_TAB_POR_AGENTE", TAB_POR_AGENTE),
-                HIST_TAB_POR_MOTIVO=os.getenv("HIST_TAB_POR_MOTIVO", TAB_POR_MOTIVO),
-                HIST_TAB_WOW=os.getenv("HIST_TAB_WOW", TAB_WOW),
                 HISTORIC_EXCEL_PATH=os.getenv("HISTORIC_EXCEL_PATH", "data/Registro_QA_Historico.xlsx"),
                 SCHEDULER_ENABLED=sched_enabled,
                 SCHEDULER_CRON_DAY=os.getenv("SCHEDULER_CRON_DAY", "mon"),
                 SCHEDULER_CRON_HOUR=int(os.getenv("SCHEDULER_CRON_HOUR", "8")),
                 SCHEDULER_CRON_MINUTE=int(os.getenv("SCHEDULER_CRON_MINUTE", "0")),
             )
-            logger.info("Settings cargados correctamente")
+            logger.info("Settings cargados correctamente desde .env")
             return settings
         except ValidationError as exc:
             summary = _summarize_validation_error(exc)
@@ -138,17 +100,7 @@ class Settings(BaseModel):
 
     @classmethod
     def from_streamlit_secrets(cls) -> "Settings":
-        """Carga la configuración desde st.secrets (Streamlit Cloud).
-
-        Usa st.secrets como fuente de configuración, con los mismos nombres
-        que en .env pero accediendo vía st.secrets[key].
-
-        Returns:
-            Settings: Instancia validada.
-
-        Raises:
-            SettingsError: Si faltan variables requeridas o hay valores inválidos.
-        """
+        """Carga la configuración desde st.secrets (Streamlit Cloud)."""
         try:
             import streamlit as st  # type: ignore[import-untyped]
 
@@ -156,14 +108,8 @@ class Settings(BaseModel):
             try:
                 sched_enabled = str(secrets.get("SCHEDULER_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
                 settings = cls(
-                    SHEET_ID=str(secrets.get("SHEET_ID", "")),
-                    SHEET_TAB=str(secrets.get("SHEET_TAB", "Operativa 2026")),
-                    SHEET_RANGE=str(secrets.get("SHEET_RANGE", "A1:G1619")),
+                    DATA_URL=str(secrets.get("DATA_URL", "")),
                     TIMEZONE=str(secrets.get("TIMEZONE", "America/Bogota")),
-                    HIST_TAB_RESUMEN=str(secrets.get("HIST_TAB_RESUMEN", TAB_RESUMEN)),
-                    HIST_TAB_POR_AGENTE=str(secrets.get("HIST_TAB_POR_AGENTE", TAB_POR_AGENTE)),
-                    HIST_TAB_POR_MOTIVO=str(secrets.get("HIST_TAB_POR_MOTIVO", TAB_POR_MOTIVO)),
-                    HIST_TAB_WOW=str(secrets.get("HIST_TAB_WOW", TAB_WOW)),
                     HISTORIC_EXCEL_PATH=str(secrets.get("HISTORIC_EXCEL_PATH", "data/Registro_QA_Historico.xlsx")),
                     SCHEDULER_ENABLED=sched_enabled,
                     SCHEDULER_CRON_DAY=str(secrets.get("SCHEDULER_CRON_DAY", "mon")),

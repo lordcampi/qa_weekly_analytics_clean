@@ -21,16 +21,9 @@ from qa_weekly_analytics.app.dashboard_logic import (  # noqa: E402
     resolve_selected_weeks,
 )
 from qa_weekly_analytics.app.kpi_cards import KpiCardsError, build_kpi_cards  # noqa: E402
-from qa_weekly_analytics.connectors.google_auth import (  # noqa: E402
-    GoogleAuthError,
-    get_credentials,
-    get_service_account_credentials,
-)
-from qa_weekly_analytics.connectors.sheets_reader import SheetsReadError, read_range  # noqa: E402
 from qa_weekly_analytics.domain.date_ranges import (  # noqa: E402
     DateRange,
     available_years,
-    get_year_weeks,
     iso_week_label,
     merge_week_ranges,
 )
@@ -42,7 +35,6 @@ from qa_weekly_analytics.storage.settings import Settings, SettingsError  # noqa
 from qa_weekly_analytics.viz.dashboard_charts import (  # noqa: E402
     agent_trend_line,
     comparison_side_by_side,
-    critical_vs_non_critical_stacked,
     top_agents_bar,
     top_reasons_bar,
     weekly_trend_bar,
@@ -50,8 +42,6 @@ from qa_weekly_analytics.viz.dashboard_charts import (  # noqa: E402
 from qa_weekly_analytics.viz.table_styles import style_critical_table, style_ranking_table, style_recurrence_table  # noqa: E402
 
 logger = logging.getLogger(__name__)
-
-APP_GOOGLE_SCOPES: list[str] = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def _setup_logging() -> None:
@@ -62,36 +52,18 @@ def _setup_logging() -> None:
 
 
 @st.cache_data(show_spinner=True)
-def _load_and_clean_data(sheet_id: str, sheet_tab: str, sheet_range: str) -> tuple[pd.DataFrame, object]:
-    """Carga datos desde Google Sheets, usando service account o OAuth según entorno."""
+def _load_and_clean_data(data_url: str) -> tuple[pd.DataFrame, object]:
+    """Carga datos desde CSV público de Google Sheets."""
     try:
-        # Streamlit Cloud: detecta service account en st.secrets
-        try:
-            gcp_sa = st.secrets.get("gcp_service_account")
-        except Exception:
-            gcp_sa = None
-
-        if gcp_sa and isinstance(gcp_sa, dict) and gcp_sa.get("client_email"):
-            creds = get_service_account_credentials(
-                service_account_info=gcp_sa,
-                scopes=APP_GOOGLE_SCOPES,
-            )
-        else:
-            # Local: OAuth Installed App con archivos locales
-            credentials_path = Path(os.getenv("GOOGLE_CREDENTIALS_PATH", ".secrets/credentials.json")).resolve()
-            token_path = Path(os.getenv("GOOGLE_TOKEN_PATH", ".secrets/token.json")).resolve()
-            creds = get_credentials(
-                scopes=APP_GOOGLE_SCOPES,
-                credentials_path=credentials_path,
-                token_path=token_path,
-            )
-
-        sheet_data = read_range(credentials=creds, sheet_id=sheet_id, sheet_tab=sheet_tab, sheet_range=sheet_range)
-        valid_df, report = clean_and_validate_rows(sheet_data.df, source_row_start=2, max_examples=10)
+        raw_df = pd.read_csv(data_url)
+        valid_df, report = clean_and_validate_rows(raw_df, source_row_start=2, max_examples=10)
         return valid_df, report
-    except (GoogleAuthError, SheetsReadError, DataValidationError) as exc:
-        logger.exception("Error cargando o limpiando datos")
+    except DataValidationError as exc:
+        logger.exception("Error validando datos")
         raise RuntimeError(str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Error cargando CSV desde URL")
+        raise RuntimeError(f"No se pudo cargar la fuente de datos: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +123,6 @@ def _render_pdf_export(kpis: object) -> None:
 
 def _render_explore_tab(
     df: pd.DataFrame,
-    selected_labels: list[str],
     all_weeks: dict[str, DateRange],
     agents: list[str] | None,
     critical_only: bool,
@@ -159,7 +130,6 @@ def _render_explore_tab(
     st.subheader("📊 Explorar Semanas")
     st.caption("Selecciona una o más semanas para ver KPIs agregados y tendencia histórica.")
 
-    # Multiselect de semanas
     if not all_weeks:
         st.info("No hay semanas con datos para el año seleccionado.")
         return
@@ -168,7 +138,7 @@ def _render_explore_tab(
     selected = st.multiselect(
         "Semanas a consultar",
         options=list(all_weeks.keys()),
-        default=selected_labels if selected_labels else default_weeks,
+        default=default_weeks,
         key="explore_weeks",
     )
 
@@ -191,32 +161,33 @@ def _render_explore_tab(
         critical=critical_filter,
     )
 
-    st.caption(f"Rango: {kpis.start_date} → {kpis.end_date} | Filas: {kpis.filtered_rows}  |  Semanas seleccionadas: {len(weeks)}")
+    st.caption(
+        f"Rango: {kpis.start_date} → {kpis.end_date} | Filas: {kpis.filtered_rows}  |  Semanas: {len(weeks)}"
+    )
     _render_kpi_cards(kpis)
 
-    # --- Tendencia semanal (una barra por semana) ---
+    # Tendencia semanal (una barra por semana)
     st.subheader("Tendencia semanal")
     weekly_data: list[tuple[str, int, int]] = []
     for w in weeks:
         label = iso_week_label(w)
-        week_kpis = compute_kpis(
+        wk = compute_kpis(
             df,
             start_date=w.start_date,
             end_date=w.end_date,
             agents=agents,
             critical=critical_filter,
         )
-        weekly_data.append((label, week_kpis.total_errors, week_kpis.critical_count))
+        weekly_data.append((label, wk.total_errors, wk.critical_count))
 
     st.plotly_chart(weekly_trend_bar(weekly_data, title="Errores por semana"), use_container_width=True)
 
-    # --- Rankings ---
+    # Rankings
     col_a, col_b = st.columns(2)
     with col_a:
         st.subheader("Top agentes")
         st.plotly_chart(top_agents_bar(kpis), use_container_width=True, key="explore_top_agents")
         st.dataframe(style_ranking_table(kpis.by_agent), use_container_width=True)
-
     with col_b:
         st.subheader("Top motivos")
         st.plotly_chart(top_reasons_bar(kpis), use_container_width=True, key="explore_top_reasons")
@@ -261,9 +232,13 @@ def _render_compare_tab(
 
     col_a, col_b = st.columns(2)
     with col_a:
-        week_a_label = st.selectbox("Semana A (base)", options=week_labels, index=max(0, len(week_labels) - 2), key="cmp_week_a")
+        week_a_label = st.selectbox(
+            "Semana A (base)", options=week_labels, index=max(0, len(week_labels) - 2), key="cmp_week_a"
+        )
     with col_b:
-        week_b_label = st.selectbox("Semana B (comparar)", options=week_labels, index=len(week_labels) - 1, key="cmp_week_b")
+        week_b_label = st.selectbox(
+            "Semana B (comparar)", options=week_labels, index=len(week_labels) - 1, key="cmp_week_b"
+        )
 
     if week_a_label == week_b_label:
         st.warning("Selecciona dos semanas diferentes para comparar.")
@@ -272,46 +247,37 @@ def _render_compare_tab(
     week_a = all_weeks[week_a_label]
     week_b = all_weeks[week_b_label]
 
-    # Asegurar orden cronológico
     if week_a.start_date > week_b.start_date:
         week_a, week_b = week_b, week_a
         week_a_label, week_b_label = week_b_label, week_a_label
 
     comparison = compare_weeks(df, week_a=week_a, week_b=week_b, agents=agents, critical_only=critical_only)
 
-    # --- KPI Cards comparativos ---
+    # KPI Cards comparativos
     st.subheader("Resumen comparativo")
     kcol1, kcol2, kcol3 = st.columns(3)
+    delta_arrow = "↑" if comparison.delta_errors > 0 else ("↓" if comparison.delta_errors < 0 else "—")
+    delta_color = "inverse" if comparison.delta_errors > 0 else ("inverse" if comparison.delta_errors < 0 else "off")
+
     with kcol1:
-        delta_arrow = "↑" if comparison.delta_errors > 0 else ("↓" if comparison.delta_errors < 0 else "—")
-        delta_color = "inverse" if comparison.delta_errors > 0 else ("inverse" if comparison.delta_errors < 0 else "off")
-        st.metric(
-            f"{comparison.week_a_label}",
-            comparison.kpis_a.total_errors,
-        )
+        st.metric(comparison.week_a_label, comparison.kpis_a.total_errors)
     with kcol2:
         st.metric(
-            f"{comparison.week_b_label}",
+            comparison.week_b_label,
             comparison.kpis_b.total_errors,
             delta=f"{delta_arrow} {abs(comparison.delta_errors)}",
             delta_color=delta_color,
         )
     with kcol3:
-        pct_str = f"{comparison.delta_pct:+.1%}"
-        st.metric("Variación %", pct_str)
+        st.metric("Variación %", f"{comparison.delta_pct:+.1%}")
 
-    # Críticos
     ccol1, ccol2 = st.columns(2)
     with ccol1:
         st.metric("Críticos — A", comparison.kpis_a.critical_count)
     with ccol2:
-        st.metric(
-            "Críticos — B",
-            comparison.kpis_b.critical_count,
-            delta=f"{comparison.delta_critical:+d}",
-        )
+        st.metric("Críticos — B", comparison.kpis_b.critical_count, delta=f"{comparison.delta_critical:+d}")
 
-    # --- Gráfico side-by-side ---
+    # Gráfico side-by-side
     st.subheader("Comparación por agente")
     st.plotly_chart(
         comparison_side_by_side(
@@ -323,7 +289,7 @@ def _render_compare_tab(
         use_container_width=True,
     )
 
-    # --- Movimiento de agentes ---
+    # Movimiento de agentes
     st.subheader("Movimiento de agentes")
     mc1, mc2, mc3, mc4 = st.columns(4)
     with mc1:
@@ -377,7 +343,6 @@ def _render_agent_tab(
     weeks = resolve_selected_weeks(selected_labels, all_weeks)
     critical_filter: bool | None = True if critical_only else None
 
-    # KPIs agregados del agente
     merged = merge_week_ranges(weeks)
     kpis = compute_kpis(
         df,
@@ -395,23 +360,17 @@ def _render_agent_tab(
     with col3:
         st.metric("Tasa criticidad", f"{kpis.critical_pct:.1%}")
 
-    # Tendencia semanal del agente
     st.subheader("Tendencia semanal")
     agent_weekly: list[tuple[str, int]] = []
     for w in weeks:
         label = iso_week_label(w)
         wk = compute_kpis(
-            df,
-            start_date=w.start_date,
-            end_date=w.end_date,
-            agents=[agent],
-            critical=critical_filter,
+            df, start_date=w.start_date, end_date=w.end_date, agents=[agent], critical=critical_filter
         )
         agent_weekly.append((label, wk.total_errors))
 
     st.plotly_chart(agent_trend_line(agent_weekly, agent), use_container_width=True)
 
-    # Motivos del agente
     col_a, col_b = st.columns(2)
     with col_a:
         st.subheader("Motivos")
@@ -423,7 +382,6 @@ def _render_agent_tab(
         st.subheader("Reincidencias agente + motivo")
         st.dataframe(style_recurrence_table(kpis.recurrence["repeated_agent_reason"]), use_container_width=True)
 
-    # Críticos del agente
     if not kpis.critical_table.empty:
         st.subheader("Detalle críticos")
         st.dataframe(style_critical_table(kpis.critical_table), use_container_width=True)
@@ -439,11 +397,10 @@ def main() -> None:
     st.set_page_config(page_title="QA Weekly Analytics", layout="wide")
     st.title("QA Weekly Analytics — Dashboard")
 
-    # --- Settings (auto-detecta Streamlit Cloud vs local) ---
+    # Settings: auto-detecta local (.env) vs Streamlit Cloud (st.secrets)
     try:
-        # Streamlit Cloud: usa st.secrets
         try:
-            _ = st.secrets.get("SHEET_ID")
+            _ = st.secrets.get("DATA_URL")
             settings = Settings.from_streamlit_secrets()
         except Exception:
             settings = Settings.from_env()
@@ -451,18 +408,18 @@ def main() -> None:
         st.error(f"Configuración inválida: {exc}")
         st.stop()
 
-    # --- Carga de datos ---
+    # Carga de datos (CSV público)
     with st.sidebar:
         st.header("🔧 Controles")
-        st.caption(f"Fuente: Google Sheets · Tab: {settings.SHEET_TAB}")
+        st.caption("Fuente: Google Sheets (CSV público)")
         if st.button("🔄 Refrescar datos", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
     try:
-        df, quality_report = _load_and_clean_data(settings.SHEET_ID, settings.SHEET_TAB, settings.SHEET_RANGE)
+        df, quality_report = _load_and_clean_data(settings.DATA_URL)
     except RuntimeError as exc:
-        st.error("No se pudo cargar/limpiar la hoja. Verifica credenciales y permisos de Sheets.")
+        st.error("No se pudo cargar/limpiar los datos desde la URL configurada.")
         st.exception(exc)
         st.stop()
 
@@ -472,74 +429,45 @@ def main() -> None:
         st.warning("No hay filas válidas tras QA-005.")
         st.stop()
 
-    # --- Opciones de UI desde datos ---
     opts: FilterOptions = get_filter_options(df)
     years: list[int] = available_years(df)
 
-    # --- Sidebar ---
+    # Sidebar
     with st.sidebar:
         st.subheader("📅 Periodo")
-        selected_year = st.selectbox(
-            "Año",
-            options=years,
-            index=0 if years else 0,
-            key="sidebar_year",
-        )
+        selected_year = st.selectbox("Año", options=years, index=0 if years else 0, key="sidebar_year")
         st.subheader("👥 Filtros")
-        agent_choice = st.selectbox(
-            "Agente",
-            options=["Todos"] + opts.agents,
-            index=0,
-            key="sidebar_agent",
-        )
+        agent_choice = st.selectbox("Agente", options=["Todos"] + opts.agents, index=0, key="sidebar_agent")
         critical_only = st.toggle("Solo críticos", value=False, key="sidebar_critical")
 
-    # --- Datos del año seleccionado ---
     all_weeks = get_available_weeks(df, selected_year)
 
     if not all_weeks:
         st.warning(f"No hay semanas con datos para el año {selected_year}.")
         st.stop()
 
-    # --- Resolver agente ---
     agents_filter: list[str] | None = None
     selected_agent: str | None = None
     if agent_choice != "Todos":
         agents_filter = [agent_choice]
         selected_agent = agent_choice
 
-    # --- Tabs principales ---
+    # Tabs
     tab1, tab2, tab3 = st.tabs(["📊 Explorar", "⚖️ Comparar", "👤 Detalle Agente"])
 
     with tab1:
-        _render_explore_tab(
-            df,
-            selected_labels=[],
-            all_weeks=all_weeks,
-            agents=agents_filter,
-            critical_only=critical_only,
-        )
+        _render_explore_tab(df, all_weeks=all_weeks, agents=agents_filter, critical_only=critical_only)
 
     with tab2:
-        _render_compare_tab(
-            df,
-            all_weeks=all_weeks,
-            agents=agents_filter,
-            critical_only=critical_only,
-        )
+        _render_compare_tab(df, all_weeks=all_weeks, agents=agents_filter, critical_only=critical_only)
 
     with tab3:
         if selected_agent:
-            _render_agent_tab(
-                df,
-                agent=selected_agent,
-                all_weeks=all_weeks,
-                critical_only=critical_only,
-            )
+            _render_agent_tab(df, agent=selected_agent, all_weeks=all_weeks, critical_only=critical_only)
         else:
             st.info("👈 Selecciona un agente en el panel lateral para ver su detalle.")
 
-    # --- PDF Export (expander al final) ---
+    # PDF Export
     if all_weeks:
         latest_week = all_weeks[list(all_weeks.keys())[-1]]
         kpis_pdf = compute_kpis(
