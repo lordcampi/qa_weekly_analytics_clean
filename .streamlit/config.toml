@@ -1,10 +1,5 @@
-# Config exclusiva de QA Weekly Analytics (no comparte puerto con otros Streamlit)
 [server]
-port = 8765
-address = "localhost"
 headless = true
-runOnSave = false
 
 [browser]
 gatherUsageStats = false
-serverAddress = "localhost"
