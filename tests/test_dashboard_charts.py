@@ -108,6 +108,8 @@ def test_agents_comparison_trend_line_has_one_trace_per_agent() -> None:
     assert isinstance(fig, go.Figure)
     assert len(fig.data) == 3
     assert {trace.name for trace in fig.data} == {"Ana", "Juan", "Pedro"}
+    assert fig.layout.title is None or fig.layout.title.text in (None, "")
+    assert fig.layout.hovermode == "x unified"
     assert any(
         getattr(shape, "y0", None) == GOAL_ERRORS_PER_WEEK
         or (isinstance(shape, dict) and shape.get("y0") == GOAL_ERRORS_PER_WEEK)

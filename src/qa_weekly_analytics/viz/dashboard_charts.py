@@ -361,24 +361,36 @@ def agents_comparison_trend_line(
                 y=counts,
                 mode="lines+markers",
                 name=agent_name,
-                line={"width": 2},
-                marker={"size": 8},
+                line={"width": 2.5, "shape": "spline"},
+                marker={"size": 7},
+                hovertemplate="%{y}<extra>%{fullData.name}</extra>",
             )
         )
 
     fig.add_hline(
         y=goal,
         line_dash="dash",
-        line_color="#c0392b",
+        line_color="rgba(231, 76, 60, 0.85)",
         line_width=2,
         annotation_text=f"Objetivo: {goal}",
-        annotation_position="top left",
-        annotation_font_color="#c0392b",
+        annotation_position="top right",
+        annotation_font_color="#e74c3c",
     )
     fig.update_layout(
-        title=title,
+        template="plotly_white",
+        title=None,
         xaxis_title="Semana",
         yaxis_title="Errores",
-        legend={"orientation": "h"},
+        hovermode="x unified",
+        legend={
+            "orientation": "h",
+            "yanchor": "top",
+            "y": -0.22,
+            "xanchor": "center",
+            "x": 0.5,
+        },
+        margin={"t": 40, "b": 100, "l": 50, "r": 30},
+        height=420,
     )
     return fig
+
