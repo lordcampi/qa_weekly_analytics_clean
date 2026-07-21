@@ -337,3 +337,35 @@ def agent_trend_line(
         yaxis_title="Errores",
     )
     return fig
+
+
+def agents_comparison_trend_line(
+    week_labels: list[str],
+    series: dict[str, list[int]],
+    *,
+    title: str = "Errores por agente (semanal)",
+) -> go.Figure:
+    """Líneas de errores semanales por agente para comparar quién comete más."""
+    if not week_labels or not series:
+        return _empty_figure(title)
+
+    fig = go.Figure()
+    for agent_name, counts in series.items():
+        fig.add_trace(
+            go.Scatter(
+                x=week_labels,
+                y=counts,
+                mode="lines+markers",
+                name=agent_name,
+                line={"width": 2},
+                marker={"size": 8},
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Semana",
+        yaxis_title="Errores",
+        legend={"orientation": "h"},
+    )
+    return fig

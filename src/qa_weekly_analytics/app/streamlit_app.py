@@ -34,6 +34,7 @@ from qa_weekly_analytics.reporting.pdf_report import PDFReportError, build_pdf_r
 from qa_weekly_analytics.storage.settings import Settings, SettingsError  # noqa: E402
 from qa_weekly_analytics.viz.dashboard_charts import (  # noqa: E402
     agent_trend_line,
+    agents_comparison_trend_line,
     comparison_side_by_side,
     top_agents_bar,
     top_reasons_bar,
@@ -169,6 +170,8 @@ def _render_explore_tab(
     # Tendencia semanal (una barra por semana)
     st.subheader("Tendencia semanal")
     weekly_data: list[tuple[str, int, int]] = []
+    weekly_agent_counts: list[dict[str, int]] = []
+    week_labels: list[str] = []
     for w in weeks:
         label = iso_week_label(w)
         wk = compute_kpis(
@@ -179,6 +182,13 @@ def _render_explore_tab(
             critical=critical_filter,
         )
         weekly_data.append((label, wk.total_errors, wk.critical_count))
+        week_labels.append(label)
+        if wk.by_agent.empty:
+            weekly_agent_counts.append({})
+        else:
+            weekly_agent_counts.append(
+                {str(row["agent"]): int(row["count"]) for _, row in wk.by_agent.iterrows()}
+            )
 
     st.plotly_chart(weekly_trend_bar(weekly_data, title="Errores por semana"), use_container_width=True)
 
@@ -209,6 +219,23 @@ def _render_explore_tab(
         st.info("No hay errores críticos en el rango seleccionado.")
     else:
         st.dataframe(style_critical_table(kpis.critical_table), use_container_width=True)
+
+    # Comparación de errores por agente (líneas)
+    st.subheader("Comparación de errores por agente")
+    top_agents = (
+        []
+        if kpis.by_agent.empty
+        else [str(a) for a in kpis.by_agent["agent"].head(10).tolist()]
+    )
+    agent_series = {
+        agent: [week_counts.get(agent, 0) for week_counts in weekly_agent_counts]
+        for agent in top_agents
+    }
+    st.plotly_chart(
+        agents_comparison_trend_line(week_labels, agent_series),
+        use_container_width=True,
+        key="explore_agents_comparison",
+    )
 
 
 # ---------------------------------------------------------------------------
