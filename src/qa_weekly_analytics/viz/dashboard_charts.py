@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 
 logger = logging.getLogger(__name__)
 
@@ -339,33 +341,54 @@ def agent_trend_line(
     return fig
 
 
-def agents_comparison_trend_line(
+def agents_small_multiples(
     week_labels: list[str],
     series: dict[str, list[int]],
     *,
+    cols: int = 2,
     title: str = "Errores por agente (semanal)",
 ) -> go.Figure:
-    """Líneas de errores semanales por agente para comparar quién comete más."""
+    """Panel de minigráficos (small multiples) con un sparkline por agente."""
     if not week_labels or not series:
         return _empty_figure(title)
 
-    fig = go.Figure()
-    for agent_name, counts in series.items():
+    agents = list(series.keys())
+    n = len(agents)
+    cols = max(1, cols)
+    rows = math.ceil(n / cols)
+    y_max = max((max(counts) if counts else 0) for counts in series.values())
+    y_range = [0, y_max if y_max > 0 else 1]
+
+    fig = make_subplots(
+        rows=rows,
+        cols=cols,
+        subplot_titles=agents,
+        shared_yaxes=True,
+        vertical_spacing=0.12,
+        horizontal_spacing=0.08,
+    )
+
+    for idx, agent_name in enumerate(agents):
+        row = (idx // cols) + 1
+        col = (idx % cols) + 1
         fig.add_trace(
             go.Scatter(
                 x=week_labels,
-                y=counts,
+                y=series[agent_name],
                 mode="lines+markers",
                 name=agent_name,
                 line={"width": 2},
-                marker={"size": 8},
-            )
+                marker={"size": 6},
+                showlegend=False,
+            ),
+            row=row,
+            col=col,
         )
 
+    fig.update_yaxes(range=y_range)
     fig.update_layout(
         title=title,
-        xaxis_title="Semana",
-        yaxis_title="Errores",
-        legend={"orientation": "h"},
+        height=max(280, rows * 140),
+        margin={"t": 60, "b": 40, "l": 40, "r": 20},
     )
     return fig

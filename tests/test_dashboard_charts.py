@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from qa_weekly_analytics.viz.dashboard_charts import (
-    agents_comparison_trend_line,
+    agents_small_multiples,
     critical_vs_non_critical_stacked,
     pareto_agents_chart,
     top_agents_bar,
@@ -94,7 +94,7 @@ def test_critical_vs_non_critical_stacked_returns_figure() -> None:
     assert len(fig.data) >= 1
 
 
-def test_agents_comparison_trend_line_has_one_trace_per_agent() -> None:
+def test_agents_small_multiples_has_one_trace_per_agent() -> None:
     week_labels = ["2026-W22", "2026-W23", "2026-W24"]
     series = {
         "Ana": [3, 1, 4],
@@ -102,15 +102,15 @@ def test_agents_comparison_trend_line_has_one_trace_per_agent() -> None:
         "Pedro": [0, 1, 2],
     }
 
-    fig = agents_comparison_trend_line(week_labels, series)
+    fig = agents_small_multiples(week_labels, series)
 
     assert isinstance(fig, go.Figure)
     assert len(fig.data) == 3
     assert {trace.name for trace in fig.data} == {"Ana", "Juan", "Pedro"}
 
 
-def test_agents_comparison_trend_line_empty_returns_figure() -> None:
-    fig = agents_comparison_trend_line([], {})
+def test_agents_small_multiples_empty_returns_figure() -> None:
+    fig = agents_small_multiples([], {})
 
     assert isinstance(fig, go.Figure)
     assert len(fig.data) == 0
