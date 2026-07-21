@@ -33,8 +33,9 @@ from qa_weekly_analytics.kpis.weekly_summary import compute_kpis  # noqa: E402
 from qa_weekly_analytics.reporting.pdf_report import PDFReportError, build_pdf_report  # noqa: E402
 from qa_weekly_analytics.storage.settings import Settings, SettingsError  # noqa: E402
 from qa_weekly_analytics.viz.dashboard_charts import (  # noqa: E402
+    GOAL_ERRORS_PER_WEEK,
     agent_trend_line,
-    agents_errors_heatmap,
+    agents_comparison_trend_line,
     comparison_side_by_side,
     top_agents_bar,
     top_reasons_bar,
@@ -220,8 +221,9 @@ def _render_explore_tab(
     else:
         st.dataframe(style_critical_table(kpis.critical_table), use_container_width=True)
 
-    # Errores por agente (heatmap)
+    # Errores por agente (líneas + objetivo)
     st.subheader("Errores por agente")
+    st.caption(f"Meta: máximo {GOAL_ERRORS_PER_WEEK} errores por agente por semana.")
     top_agents = (
         []
         if kpis.by_agent.empty
@@ -232,9 +234,9 @@ def _render_explore_tab(
         for agent in top_agents
     }
     st.plotly_chart(
-        agents_errors_heatmap(week_labels, agent_series),
+        agents_comparison_trend_line(week_labels, agent_series),
         use_container_width=True,
-        key="explore_agents_heatmap",
+        key="explore_agents_comparison",
     )
 
 

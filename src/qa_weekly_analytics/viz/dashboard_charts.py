@@ -339,39 +339,46 @@ def agent_trend_line(
     return fig
 
 
-def agents_errors_heatmap(
+GOAL_ERRORS_PER_WEEK = 1.8
+
+
+def agents_comparison_trend_line(
     week_labels: list[str],
     series: dict[str, list[int]],
     *,
+    goal: float = GOAL_ERRORS_PER_WEEK,
     title: str = "Errores por agente (semanal)",
 ) -> go.Figure:
-    """Heatmap agente × semana con conteo de errores absolutos."""
+    """Líneas de errores semanales por agente con línea de objetivo."""
     if not week_labels or not series:
         return _empty_figure(title)
 
-    agents = list(series.keys())
-    z = [series[agent] for agent in agents]
-    text = [[str(v) for v in row] for row in z]
-
-    fig = go.Figure(
-        data=[
-            go.Heatmap(
+    fig = go.Figure()
+    for agent_name, counts in series.items():
+        fig.add_trace(
+            go.Scatter(
                 x=week_labels,
-                y=agents,
-                z=z,
-                text=text,
-                texttemplate="%{text}",
-                textfont={"size": 12},
-                colorscale="YlOrRd",
-                colorbar={"title": "Errores"},
-                hovertemplate="Agente: %{y}<br>Semana: %{x}<br>Errores: %{z}<extra></extra>",
+                y=counts,
+                mode="lines+markers",
+                name=agent_name,
+                line={"width": 2},
+                marker={"size": 8},
             )
-        ]
+        )
+
+    fig.add_hline(
+        y=goal,
+        line_dash="dash",
+        line_color="#c0392b",
+        line_width=2,
+        annotation_text=f"Objetivo: {goal}",
+        annotation_position="top left",
+        annotation_font_color="#c0392b",
     )
     fig.update_layout(
         title=title,
         xaxis_title="Semana",
-        yaxis_title="Agente",
-        yaxis={"autorange": "reversed"},
+        yaxis_title="Errores",
+        legend={"orientation": "h"},
     )
     return fig
