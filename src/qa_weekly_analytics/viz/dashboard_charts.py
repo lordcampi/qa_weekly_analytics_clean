@@ -378,7 +378,7 @@ def agents_comparison_trend_line(
     )
     fig.update_layout(
         template="plotly_white",
-        title=None,
+        title="",
         xaxis_title="Semana",
         yaxis_title="Errores",
         hovermode="x unified",
@@ -393,4 +393,48 @@ def agents_comparison_trend_line(
         height=420,
     )
     return fig
+
+
+def classify_agents_vs_average(series: dict[str, list[int]]) -> pd.DataFrame:
+    """Clasifica agentes por encima/debajo del promedio semanal del equipo.
+
+    Args:
+        series: agente -> conteos semanales alineados.
+
+    Returns:
+        DataFrame con agent, avg_weekly, team_avg, diff, status.
+    """
+    if not series:
+        return pd.DataFrame(columns=["agent", "avg_weekly", "team_avg", "diff", "status"])
+
+    avg_weekly: dict[str, float] = {}
+    for agent_name, counts in series.items():
+        n = len(counts)
+        avg_weekly[agent_name] = (sum(counts) / n) if n else 0.0
+
+    team_avg = sum(avg_weekly.values()) / len(avg_weekly)
+    team_avg_r = round(team_avg, 2)
+
+    rows: list[dict[str, object]] = []
+    for agent_name, avg in avg_weekly.items():
+        avg_r = round(avg, 2)
+        diff = round(avg_r - team_avg_r, 2)
+        if avg_r > team_avg_r:
+            status = "Por encima"
+        elif avg_r < team_avg_r:
+            status = "Por debajo"
+        else:
+            status = "En el promedio"
+        rows.append(
+            {
+                "agent": agent_name,
+                "avg_weekly": avg_r,
+                "team_avg": team_avg_r,
+                "diff": diff,
+                "status": status,
+            }
+        )
+
+    result = pd.DataFrame(rows)
+    return result.sort_values(["avg_weekly", "agent"], ascending=[False, True], kind="mergesort").reset_index(drop=True)
 

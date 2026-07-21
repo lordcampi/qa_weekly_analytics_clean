@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from qa_weekly_analytics.viz.dashboard_charts import (
     GOAL_ERRORS_PER_WEEK,
     agents_comparison_trend_line,
+    classify_agents_vs_average,
     critical_vs_non_critical_stacked,
     pareto_agents_chart,
     top_agents_bar,
@@ -108,7 +109,9 @@ def test_agents_comparison_trend_line_has_one_trace_per_agent() -> None:
     assert isinstance(fig, go.Figure)
     assert len(fig.data) == 3
     assert {trace.name for trace in fig.data} == {"Ana", "Juan", "Pedro"}
-    assert fig.layout.title is None or fig.layout.title.text in (None, "")
+    title_text = getattr(fig.layout.title, "text", fig.layout.title)
+    assert title_text in (None, "")
+    assert title_text != "undefined"
     assert fig.layout.hovermode == "x unified"
     assert any(
         getattr(shape, "y0", None) == GOAL_ERRORS_PER_WEEK
@@ -122,3 +125,28 @@ def test_agents_comparison_trend_line_empty_returns_figure() -> None:
 
     assert isinstance(fig, go.Figure)
     assert len(fig.data) == 0
+
+
+def test_classify_agents_vs_average_splits_above_and_below() -> None:
+    series = {
+        "Ana": [4, 4, 4],  # avg 4
+        "Juan": [2, 2, 2],  # avg 2
+        "Pedro": [1, 1, 1],  # avg 1
+    }
+    # team avg = (4+2+1)/3 = 2.33
+
+    result = classify_agents_vs_average(series)
+
+    assert list(result.columns) == ["agent", "avg_weekly", "team_avg", "diff", "status"]
+    by_agent = result.set_index("agent")
+    assert by_agent.loc["Ana", "status"] == "Por encima"
+    assert by_agent.loc["Pedro", "status"] == "Por debajo"
+    assert by_agent.loc["Juan", "status"] == "Por debajo"
+    assert float(by_agent.loc["Ana", "team_avg"]) == float(by_agent.loc["Pedro", "team_avg"])
+
+
+def test_classify_agents_vs_average_empty() -> None:
+    result = classify_agents_vs_average({})
+
+    assert result.empty
+    assert list(result.columns) == ["agent", "avg_weekly", "team_avg", "diff", "status"]

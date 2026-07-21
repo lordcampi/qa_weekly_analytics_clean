@@ -36,6 +36,7 @@ from qa_weekly_analytics.viz.dashboard_charts import (  # noqa: E402
     GOAL_ERRORS_PER_WEEK,
     agent_trend_line,
     agents_comparison_trend_line,
+    classify_agents_vs_average,
     comparison_side_by_side,
     top_agents_bar,
     top_reasons_bar,
@@ -238,6 +239,36 @@ def _render_explore_tab(
         use_container_width=True,
         key="explore_agents_comparison",
     )
+
+    # Por encima / por debajo del promedio del equipo
+    all_agents = (
+        []
+        if kpis.by_agent.empty
+        else [str(a) for a in kpis.by_agent["agent"].tolist()]
+    )
+    all_agent_series = {
+        agent: [week_counts.get(agent, 0) for week_counts in weekly_agent_counts]
+        for agent in all_agents
+    }
+    vs_avg = classify_agents_vs_average(all_agent_series)
+    if vs_avg.empty:
+        st.info("No hay agentes para comparar contra el promedio.")
+    else:
+        team_avg = float(vs_avg["team_avg"].iloc[0])
+        st.caption(f"Promedio del equipo: {team_avg:.2f} errores por agente por semana.")
+        above = vs_avg[vs_avg["status"] == "Por encima"][["agent", "avg_weekly", "diff"]].rename(
+            columns={"agent": "Agente", "avg_weekly": "Prom. semanal", "diff": "Diff vs equipo"}
+        )
+        below = vs_avg[vs_avg["status"] == "Por debajo"][["agent", "avg_weekly", "diff"]].rename(
+            columns={"agent": "Agente", "avg_weekly": "Prom. semanal", "diff": "Diff vs equipo"}
+        )
+        col_above, col_below = st.columns(2)
+        with col_above:
+            st.markdown("**Por encima del promedio**")
+            st.dataframe(above, use_container_width=True, hide_index=True)
+        with col_below:
+            st.markdown("**Por debajo del promedio**")
+            st.dataframe(below, use_container_width=True, hide_index=True)
 
 
 # ---------------------------------------------------------------------------
