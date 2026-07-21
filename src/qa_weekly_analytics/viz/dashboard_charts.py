@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import logging
-import math
 from datetime import date
 from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
 
 logger = logging.getLogger(__name__)
 
@@ -341,54 +339,39 @@ def agent_trend_line(
     return fig
 
 
-def agents_small_multiples(
+def agents_errors_heatmap(
     week_labels: list[str],
     series: dict[str, list[int]],
     *,
-    cols: int = 2,
     title: str = "Errores por agente (semanal)",
 ) -> go.Figure:
-    """Panel de minigráficos (small multiples) con un sparkline por agente."""
+    """Heatmap agente × semana con conteo de errores absolutos."""
     if not week_labels or not series:
         return _empty_figure(title)
 
     agents = list(series.keys())
-    n = len(agents)
-    cols = max(1, cols)
-    rows = math.ceil(n / cols)
-    y_max = max((max(counts) if counts else 0) for counts in series.values())
-    y_range = [0, y_max if y_max > 0 else 1]
+    z = [series[agent] for agent in agents]
+    text = [[str(v) for v in row] for row in z]
 
-    fig = make_subplots(
-        rows=rows,
-        cols=cols,
-        subplot_titles=agents,
-        shared_yaxes=True,
-        vertical_spacing=0.12,
-        horizontal_spacing=0.08,
-    )
-
-    for idx, agent_name in enumerate(agents):
-        row = (idx // cols) + 1
-        col = (idx % cols) + 1
-        fig.add_trace(
-            go.Scatter(
+    fig = go.Figure(
+        data=[
+            go.Heatmap(
                 x=week_labels,
-                y=series[agent_name],
-                mode="lines+markers",
-                name=agent_name,
-                line={"width": 2},
-                marker={"size": 6},
-                showlegend=False,
-            ),
-            row=row,
-            col=col,
-        )
-
-    fig.update_yaxes(range=y_range)
+                y=agents,
+                z=z,
+                text=text,
+                texttemplate="%{text}",
+                textfont={"size": 12},
+                colorscale="YlOrRd",
+                colorbar={"title": "Errores"},
+                hovertemplate="Agente: %{y}<br>Semana: %{x}<br>Errores: %{z}<extra></extra>",
+            )
+        ]
+    )
     fig.update_layout(
         title=title,
-        height=max(280, rows * 140),
-        margin={"t": 60, "b": 40, "l": 40, "r": 20},
+        xaxis_title="Semana",
+        yaxis_title="Agente",
+        yaxis={"autorange": "reversed"},
     )
     return fig
